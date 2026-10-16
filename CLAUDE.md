@@ -177,7 +177,9 @@ hotkey ─► stopRecording ─(tail_ms)─► finishRecording
 2. Добавить поле в DTO (`TapLessData/Config/ConfigDTO.swift`): `CodingKeys` (snake_case в TOML) и перенос в `.domain`. Для вариантов `[variants.<номер>]` — ещё в `ConfigDTO.variantKeys`; поле там optional со значением по умолчанию в `.domain`.
 3. Добавить ключ с комментарием в `config.default.toml` и запустить `./scripts/gen_default_config.sh`.
 4. Запустить `./scripts/test.sh`: тест `defaultsParse` проверяет, что дефолты разбираются.
-5. Если ключ виден пользователю — описать в `README.md`.
+5. Если ключ виден пользователю — описать в `README.md` и в `skills/tapless-config/SKILL.md`.
+
+`skills/tapless-config/SKILL.md` — публичная инструкция для сторонних ИИ-агентов: как читать и менять `~/.config/tapless.toml`, словарь, сценарии (в том числе пополнение словаря по истории диалогов). README ссылается на неё по raw-URL ветки `main`. При изменении ключей, правил слияния, клавиш панели или путей обновляйте и её.
 
 ## Файлы на машине пользователя
 
