@@ -2,7 +2,7 @@
 # Сборка TapLess.app.
 #   ./build_app.sh            — собрать в build/TapLess.app
 #   ./build_app.sh --install  — собрать и положить в ~/Applications
-#   ./build_app.sh --zip      — собрать и упаковать в build/TapLess.zip для раздачи
+#   ./build_app.sh --zip      — собрать и упаковать в build/TapLess.zip (+ .sha256) для раздачи
 #
 # Подпись: если в Связке ключей есть сертификат подписи кода «TapLess Dev»,
 # приложение подписывается им, иначе — ad-hoc. При ad-hoc подписи macOS
@@ -55,7 +55,8 @@ if [[ "$ZIP" == 1 ]]; then
   ZIP_PATH="$BUILD_DIR/$APP_NAME.zip"
   rm -f "$ZIP_PATH"
   ditto -c -k --keepParent "$APP" "$ZIP_PATH"
-  echo "▸ Архив для раздачи: $ZIP_PATH"
+  (cd "$BUILD_DIR" && shasum -a 256 "$APP_NAME.zip" > "$APP_NAME.zip.sha256")
+  echo "▸ Архив для раздачи: $ZIP_PATH (сумма: $ZIP_PATH.sha256)"
 fi
 
 if [[ "$INSTALL" == 1 ]]; then

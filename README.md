@@ -21,6 +21,46 @@
 - Claude Code — только если выберете harness `claude`: команда `claude` должна работать в Терминале.
 - Около 1,6 ГБ на диске под модель `large-v3-turbo`.
 
+## Установка одной командой
+
+Готовая сборка из [GitHub Releases](https://github.com/aaudin90/Tapless/releases). Xcode и Swift не нужны.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aaudin90/Tapless/main/scripts/install.sh | bash
+```
+
+Скрипт делает по шагам:
+
+1. Проверяет macOS 14+ и Apple Silicon.
+2. Скачивает `TapLess.zip` последнего релиза во временную папку.
+3. Если у релиза есть `TapLess.zip.sha256`, сверяет SHA-256. При несовпадении установка останавливается. Если файла нет, скрипт предупреждает и продолжает.
+4. Распаковывает архив и проверяет подпись (`codesign --verify`).
+5. Закрывает запущенный TapLess, заменяет `TapLess.app` в `~/Applications`, снимает карантин.
+6. Запускает приложение.
+
+Скрипт не использует `sudo` и не трогает настройки прокси. Конфиг `~/.config/tapless.toml` он не меняет.
+
+Переменные окружения:
+
+| Переменная | Значение |
+|---|---|
+| `TAPLESS_VERSION` | Тег релиза, например `v0.1.0`. По умолчанию — последний релиз. |
+| `TAPLESS_INSTALL_DIR` | Папка установки. По умолчанию `~/Applications`. |
+| `TAPLESS_NO_LAUNCH=1` | Не запускать приложение после установки. |
+| `TAPLESS_SKIP_QUIT=1` | Служебная, для проверок: не закрывать запущенный TapLess. |
+
+Пример: `curl -fsSL https://raw.githubusercontent.com/aaudin90/Tapless/main/scripts/install.sh | TAPLESS_VERSION=v0.1.0 bash`.
+
+Если хотите сначала прочитать скрипт:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/aaudin90/Tapless/main/scripts/install.sh
+less install.sh
+bash install.sh
+```
+
+Про разрешения при первом запуске — в разделе ниже.
+
 ## Сборка и установка
 
 ```bash
@@ -43,10 +83,12 @@ cd Tapless                     # корень репозитория
 ### Раздать знакомым
 
 ```bash
-./build_app.sh --zip           # build/TapLess.zip, подписан сертификатом TapLess Dev
+./build_app.sh --zip           # build/TapLess.zip и build/TapLess.zip.sha256, подписан сертификатом TapLess Dev
 ```
 
-Получатель распаковывает архив и переносит `TapLess.app` в `~/Applications` или `/Applications`. Сертификат самоподписанный, поэтому Gatekeeper при первом запуске покажет «Не удаётся проверить разработчика». Есть два способа открыть:
+Выкладывайте `TapLess.zip` в GitHub Releases вместе с `TapLess.zip.sha256`. Файл суммы — вывод `shasum -a 256 TapLess.zip > TapLess.zip.sha256` (первое поле — хэш, потом имя файла). `build_app.sh --zip` создаёт его сам. Скрипт `scripts/install.sh` сверяет по нему загрузку. Без этого файла он только предупреждает.
+
+Получатель ставит одной командой (см. «Установку одной командой» выше) или вручную: распаковывает архив и переносит `TapLess.app` в `~/Applications` или `/Applications`. Сертификат самоподписанный, поэтому Gatekeeper при первом запуске покажет «Не удаётся проверить разработчика». Есть два способа открыть:
 
 - Системные настройки → Конфиденциальность и безопасность → внизу «Всё равно открыть»;
 - или в Терминале: `xattr -dr com.apple.quarantine ~/Applications/TapLess.app`.

@@ -29,7 +29,8 @@ swift build                                   # debug-сборка, быстра
 swift build -c release --arch arm64           # то же, что делает build_app.sh
 ./build_app.sh                                # собрать build/TapLess.app
 ./build_app.sh --install                      # + установить в ~/Applications и запустить
-./build_app.sh --zip                          # + архив build/TapLess.zip для раздачи
+./build_app.sh --zip                          # + архив build/TapLess.zip и build/TapLess.zip.sha256 для раздачи
+./scripts/install.sh                          # установка последнего релиза из GitHub Releases (для проверки агентом: TAPLESS_INSTALL_DIR=<временная папка> TAPLESS_NO_LAUNCH=1 TAPLESS_SKIP_QUIT=1)
 SIGN_IDENTITY="Имя" ./build_app.sh --install  # подпись другим сертификатом
 ```
 
