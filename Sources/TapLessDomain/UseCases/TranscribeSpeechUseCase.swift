@@ -9,18 +9,17 @@ public enum ClipRejection: Sendable, Equatable {
 }
 
 /// Сценарий «звук → текст»: проверка записи, распознавание STT-моделью
-/// с подсказкой из словаря, чистка расшифровки и замены по словарю.
+/// со статичной подсказкой `stt.initial_prompt` и чистка расшифровки.
+/// Ошибки распознавания здесь не исправляются: это делает модель в `FormatTextUseCase` по словарю.
 public struct TranscribeSpeechUseCase: Sendable {
     private let recognizer: SpeechRecognizer
     private let general: GeneralConfig
     private let stt: STTConfig
-    private let dictionary: DictionaryConfig
 
     public init(recognizer: SpeechRecognizer, config: AppConfig) {
         self.recognizer = recognizer
         self.general = config.general
         self.stt = config.stt
-        self.dictionary = config.dictionary
     }
 
     /// Скачивает и загружает модель, если это ещё не сделано.
@@ -48,12 +47,8 @@ public struct TranscribeSpeechUseCase: Sendable {
     /// Распознаёт запись. Модель должна быть загружена (`prepareModel`).
     /// Пустая строка — ничего не сказано.
     public func execute(_ clip: AudioClip) async throws -> String {
-        let prompt = TextTools.whisperPrompt(stt: stt, dictionary: dictionary)
+        let prompt = stt.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let raw = try await recognizer.transcribe(clip.samples, prompt: prompt)
-        var text = TextTools.cleanTranscript(raw, dropPhrases: stt.dropPhrases)
-        if dictionary.applyLocally {
-            text = TextTools.applyReplacements(text, dictionary.replace)
-        }
-        return text
+        return TextTools.cleanTranscript(raw, dropPhrases: stt.dropPhrases)
     }
 }

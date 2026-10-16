@@ -21,11 +21,19 @@ private actor RecordingLLM: LLMRepository {
     }
 }
 
-private struct StubRecognizer: SpeechRecognizer {
+private final class StubRecognizer: SpeechRecognizer, @unchecked Sendable {
     let reply: String
+    private let lock = NSLock()
+    private var _prompts: [String] = []
+    var prompts: [String] { lock.withLock { _prompts } }
+
+    init(reply: String) { self.reply = reply }
     func prepare(status: @escaping @Sendable (String) -> Void) async throws {}
     func unload() async {}
-    func transcribe(_ samples: [Float], prompt: String) async throws -> String { reply }
+    func transcribe(_ samples: [Float], prompt: String) async throws -> String {
+        lock.withLock { _prompts.append(prompt) }
+        return reply
+    }
 }
 
 private actor RecordingSetup: LocalLLMSetup {
@@ -223,11 +231,22 @@ private actor RecordingSetup: LocalLLMSetup {
         #expect(useCase.rejection(for: AudioClip(samples: [], peakLevel: 0.0)) == .silence)
     }
 
-    @Test func cleansTranscriptAndAppliesReplacements() async throws {
+    /// Текст после Whisper только чистится: термины словаря исправляет ИИ, не распознавание.
+    @Test func cleansTranscriptWithoutReplacements() async throws {
         let raw = "<|ru|> Запусти клод   код и хайку. Продолжение следует..."
         let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: raw), config: defaultConfig())
         let clip = AudioClip(samples: [0.1], peakLevel: 0.1)
-        #expect(try await useCase.execute(clip) == "Запусти Claude Code и Haiku.")
+        #expect(try await useCase.execute(clip) == "Запусти клод код и хайку.")
+    }
+
+    /// В Whisper идёт только stt.initial_prompt, словарь — нет.
+    @Test func whisperGetsOnlyInitialPrompt() async throws {
+        var config = defaultConfig()
+        config.stt.initialPrompt = " Ollama, Gemma. "
+        config.dictionary.terms = ["Kubernetes": ["кубер"]]
+        let recognizer = StubRecognizer(reply: "текст")
+        _ = try await TranscribeSpeechUseCase(recognizer: recognizer, config: config).execute(AudioClip(samples: [0.1], peakLevel: 0.1))
+        #expect(recognizer.prompts == ["Ollama, Gemma."])
     }
 
     @Test func punctuationOnlyIsEmpty() async throws {

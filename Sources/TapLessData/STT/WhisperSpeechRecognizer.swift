@@ -31,6 +31,9 @@ private final class ProgressMilestone: @unchecked Sendable {
 
 /// STT на WhisperKit (CoreML, Neural Engine). Модель грузится один раз и живёт в памяти.
 public actor WhisperSpeechRecognizer: SpeechRecognizer {
+    /// Предел подсказки: остальные ~170 токенов окна остаются под текст.
+    static let maxPromptTokens = 48
+
     private let settings: STTConfig
     private let modelsDirectory: URL
     private var whisper: WhisperKit?
@@ -77,8 +80,12 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         if !prompt.isEmpty, let tokenizer = whisper.tokenizer {
             let special = tokenizer.specialTokens.specialTokenBegin
             let ids = tokenizer.encode(text: " " + prompt).filter { $0 < special }
-            // WhisperKit использует только последние ~111 токенов подсказки.
-            if !ids.isEmpty { promptTokens = Array(ids.suffix(111)) }
+            // На окно до 30 с у WhisperKit 224 токена, и подсказка отнимает их у текста:
+            // подсказка на 111 токенов обрывала русскую речь уже на 15-й секунде.
+            if ids.count > Self.maxPromptTokens {
+                Log.warning("Подсказка Whisper длиннее \(Self.maxPromptTokens) токенов (\(ids.count)), начало отброшено. Сократите stt.initial_prompt", .stt)
+            }
+            if !ids.isEmpty { promptTokens = Array(ids.suffix(Self.maxPromptTokens)) }
         }
 
         let language = settings.languageCode

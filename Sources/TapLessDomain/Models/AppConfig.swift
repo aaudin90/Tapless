@@ -63,19 +63,18 @@ public struct STTConfig: Sendable, Equatable {
     public var modelPath: String
     public var modelRepo: String
     public var language: String
-    public var promptFromDictionary: Bool
+    /// Статичная подсказка для Whisper. Словарь в Whisper не идёт.
     public var initialPrompt: String
     public var silenceThreshold: Double
     public var dropPhrases: [String]
 
     public init(model: String, modelPath: String, modelRepo: String, language: String,
-                promptFromDictionary: Bool, initialPrompt: String,
+                initialPrompt: String,
                 silenceThreshold: Double, dropPhrases: [String]) {
         self.model = model
         self.modelPath = modelPath
         self.modelRepo = modelRepo
         self.language = language
-        self.promptFromDictionary = promptFromDictionary
         self.initialPrompt = initialPrompt
         self.silenceThreshold = silenceThreshold
         self.dropPhrases = dropPhrases
@@ -261,16 +260,13 @@ public struct LogConfig: Sendable, Equatable {
     public var logLevel: LogLevel { LogLevel(name: level) ?? .debug }
 }
 
+/// Словарь для модели: термин → как он может прийти из распознавания, плюс свободные пояснения.
 public struct DictionaryConfig: Sendable, Equatable {
-    public var terms: [String]
-    public var replace: [String: String]
-    public var applyLocally: Bool
+    public var terms: [String: [String]]
     public var notes: String
 
-    public init(terms: [String], replace: [String: String], applyLocally: Bool, notes: String) {
+    public init(terms: [String: [String]], notes: String) {
         self.terms = terms
-        self.replace = replace
-        self.applyLocally = applyLocally
         self.notes = notes
     }
 }

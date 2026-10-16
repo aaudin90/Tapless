@@ -69,7 +69,6 @@ struct ConfigDTO: Decodable {
         let modelPath: String
         let modelRepo: String
         let language: String
-        let promptFromDictionary: Bool
         let initialPrompt: String
         let silenceThreshold: Double
         let dropPhrases: [String]
@@ -78,7 +77,6 @@ struct ConfigDTO: Decodable {
             case model, language
             case modelPath = "model_path"
             case modelRepo = "model_repo"
-            case promptFromDictionary = "prompt_from_dictionary"
             case initialPrompt = "initial_prompt"
             case silenceThreshold = "silence_threshold"
             case dropPhrases = "drop_phrases"
@@ -173,14 +171,22 @@ struct ConfigDTO: Decodable {
     }
 
     struct DictionarySection: Decodable {
-        let terms: [String]
-        let replace: [String: String]
-        let applyLocally: Bool
+        let terms: [String: [String]]
         let notes: String
 
         enum CodingKeys: String, CodingKey {
-            case terms, replace, notes
-            case applyLocally = "apply_locally"
+            case terms, notes
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            notes = try c.decode(String.self, forKey: .notes)
+            // Прежний формат — массив терминов без вариантов распознавания.
+            if let list = try? c.decode([String].self, forKey: .terms) {
+                terms = Dictionary(list.map { ($0, []) }, uniquingKeysWith: { first, _ in first })
+            } else {
+                terms = try c.decode([String: [String]].self, forKey: .terms)
+            }
         }
     }
 
@@ -232,7 +238,6 @@ struct ConfigDTO: Decodable {
                 modelPath: stt.modelPath,
                 modelRepo: stt.modelRepo,
                 language: stt.language,
-                promptFromDictionary: stt.promptFromDictionary,
                 initialPrompt: stt.initialPrompt,
                 silenceThreshold: stt.silenceThreshold,
                 dropPhrases: stt.dropPhrases
@@ -257,12 +262,7 @@ struct ConfigDTO: Decodable {
                 SchemaConfig(json: $0.json ?? "", file: $0.file ?? "", resultPath: $0.resultPath ?? "")
             },
             log: LogConfig(level: log.level, includeText: log.includeText),
-            dictionary: DictionaryConfig(
-                terms: dictionary.terms,
-                replace: dictionary.replace,
-                applyLocally: dictionary.applyLocally,
-                notes: dictionary.notes
-            ),
+            dictionary: DictionaryConfig(terms: dictionary.terms, notes: dictionary.notes),
             variants: try orderedVariants().map { number, v in
                 guard let prompt = v.prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw ConfigError.schema("variants.\(number): не задан prompt")

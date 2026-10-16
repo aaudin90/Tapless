@@ -39,7 +39,7 @@ import TapLessDomain
         #expect(config.log.logLevel == .debug)
         #expect(!config.log.includeText)
         #expect(config.activeVariants.map(\.name) == ["Как сказал", "Деловое сообщение"])
-        #expect(config.dictionary.replace["клод код"] == "Claude Code")
+        #expect(config.dictionary.terms["Claude Code"]?.contains("клауд код") == true)
     }
 
     @Test func missingFileGivesDefaults() throws {
@@ -60,8 +60,8 @@ import TapLessDomain
         [llm.env]
         ANTHROPIC_API_KEY = "test"
 
-        [dictionary.replace]
-        "джейсон" = "JSON"
+        [dictionary.terms]
+        "JSON" = ["джейсон"]
         """)
         let defaults = repository.defaults()
         let config = try repository.load().config
@@ -73,18 +73,47 @@ import TapLessDomain
         #expect(config.llm.harness == defaults.llm.harness)
         #expect(config.llm.env["ANTHROPIC_API_KEY"] == "test")
         // Таблицы сливаются по ключам.
-        #expect(config.dictionary.replace["джейсон"] == "JSON")
-        #expect(config.dictionary.replace["клод код"] == "Claude Code")
+        #expect(config.dictionary.terms["JSON"] == ["джейсон"])
+        #expect(config.dictionary.terms["Claude Code"] == defaults.dictionary.terms["Claude Code"])
         #expect(config.variants == defaults.variants)
     }
 
     @Test func arraysReplaceDefaults() throws {
         let repository = try makeRepository("""
-        [dictionary]
-        terms = ["Kotlin"]
+        [stt]
+        drop_phrases = ["Конец"]
         """)
         let config = try repository.load().config
-        #expect(config.dictionary.terms == ["Kotlin"])
+        #expect(config.stt.dropPhrases == ["Конец"])
+    }
+
+    /// Прежний формат словаря: массив terms заменяет термины по умолчанию, без вариантов распознавания.
+    @Test func legacyTermsArrayStillParses() throws {
+        let repository = try makeRepository("""
+        [dictionary]
+        terms = ["Kotlin", "Go"]
+        """)
+        let loaded = try repository.load()
+        #expect(loaded.config.dictionary.terms == ["Kotlin": [], "Go": []])
+        #expect(loaded.warnings.isEmpty)
+    }
+
+    /// Удалённые ключи regex-замен и подсказки из словаря — предупреждения, не ошибка.
+    @Test func removedDictionaryKeysWarn() throws {
+        let repository = try makeRepository("""
+        [stt]
+        prompt_from_dictionary = true
+
+        [dictionary]
+        apply_locally = true
+
+        [dictionary.replace]
+        "кубер" = "Kubernetes"
+        """)
+        let warnings = try repository.load().warnings.joined(separator: "\n")
+        #expect(warnings.contains("stt.prompt_from_dictionary"))
+        #expect(warnings.contains("dictionary.apply_locally"))
+        #expect(warnings.contains("dictionary.replace"))
     }
 
     @Test func variantKeysOverrideAndNewNumbersAdd() throws {

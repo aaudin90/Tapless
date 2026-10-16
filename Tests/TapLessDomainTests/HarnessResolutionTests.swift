@@ -9,7 +9,7 @@ private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String =
                                minRecordingMs: 300, tailMs: 0, maxRecordingSeconds: 60),
         paste: PasteConfig(autoPaste: true, restoreClipboard: true, pasteDelayMs: 0, restoreDelayMs: 0),
         ui: UIConfig(position: "top", width: 400, maxLines: 5, showRaw: true),
-        stt: STTConfig(model: "m", modelPath: "", modelRepo: "", language: "ru", promptFromDictionary: false,
+        stt: STTConfig(model: "m", modelPath: "", modelRepo: "", language: "ru",
                        initialPrompt: "", silenceThreshold: 0, dropPhrases: []),
         llm: LLMConfig(harness: llmHarness, model: llmModel, timeoutSeconds: 30, shell: "/bin/zsh",
                        loginShell: true, extraPath: [], workdir: "", inputTemplate: "{text}",
@@ -17,7 +17,7 @@ private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String =
         harnesses: harnesses,
         schemas: [:],
         log: LogConfig(level: "info", includeText: false),
-        dictionary: DictionaryConfig(terms: [], replace: [:], applyLocally: false, notes: ""),
+        dictionary: DictionaryConfig(terms: [:], notes: ""),
         variants: variants)
 }
 

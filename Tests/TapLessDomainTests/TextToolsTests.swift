@@ -23,47 +23,6 @@ private func defaultConfig() -> AppConfig {
     }
 }
 
-@Suite struct ApplyReplacementsTests {
-    @Test func wholeWordsOnly() {
-        #expect(TextTools.applyReplacements("клоды и клод", ["клод": "Claude"]) == "клоды и Claude")
-    }
-
-    @Test func caseInsensitive() {
-        #expect(TextTools.applyReplacements("КЛОД", ["клод": "Claude"]) == "Claude")
-    }
-
-    @Test func phraseWithAnySeparators() {
-        let map = ["клауд код": "Claude Code"]
-        #expect(TextTools.applyReplacements("клауд код", map) == "Claude Code")
-        #expect(TextTools.applyReplacements("клауд-код", map) == "Claude Code")
-        #expect(TextTools.applyReplacements("клауд   \n код", map) == "Claude Code")
-    }
-
-    @Test func hyphenatedKeyMatchesSpace() {
-        let map = ["кто-то": "someone"]
-        #expect(TextTools.applyReplacements("кто то и кто-то", map) == "someone и someone")
-    }
-
-    @Test func noRepeatedReplacement() {
-        let map = ["клауд код": "Claude Code", "claude": "X", "code": "CODE"]
-        #expect(TextTools.applyReplacements("код клауд код", map) == "код Claude Code")
-    }
-
-    @Test func deterministicForEqualLength() {
-        #expect(TextTools.applyReplacements("a b", ["a": "b", "b": "c"]) == "b c")
-    }
-
-    @Test func specialCharactersAreLiteral() {
-        let map = ["c++": "$1\\n", "a.b": "$0"]
-        #expect(TextTools.applyReplacements("c++ и a.b и axb", map) == "$1\\n и $0 и axb")
-    }
-
-    @Test func emptyKeysAndMapAreSkipped() {
-        #expect(TextTools.applyReplacements("текст", ["": "x", " - ": "y"]) == "текст")
-        #expect(TextTools.applyReplacements("текст", [:]) == "текст")
-    }
-}
-
 @Suite struct CleanTranscriptTests {
     @Test func removesServiceTokens() {
         #expect(TextTools.cleanTranscript("<|ru|> привет <|endoftext|>", dropPhrases: []) == "привет")
@@ -118,25 +77,22 @@ private func defaultConfig() -> AppConfig {
 
 @Suite struct DictionaryTextTests {
     @Test func emptyDictionaryBlock() {
-        let d = DictionaryConfig(terms: [], replace: [:], applyLocally: true, notes: "")
+        let d = DictionaryConfig(terms: [:], notes: "  ")
         #expect(TextTools.dictionaryBlock(d) == "(словарь пуст)")
     }
 
-    @Test func whisperPromptTrimsAndDeduplicates() {
-        var config = defaultConfig()
-        config.stt.initialPrompt = ""
-        config.stt.promptFromDictionary = true
-        config.dictionary.terms = [" Kubernetes", "Kubernetes ", "swift"]
-        config.dictionary.replace = ["кубер": "kubernetes\n", "": "  "]
-        let prompt = TextTools.whisperPrompt(stt: config.stt, dictionary: config.dictionary)
-        #expect(prompt == "Kubernetes, swift.")
+    @Test func termsAreSortedTrimmedAndDeduplicated() {
+        let d = DictionaryConfig(
+            terms: ["kubernetes ": ["кубер", " Кубер", "", "кубернетес"], "Docker": [], " ": ["пусто"]],
+            notes: " Автор — Go-разработчик. "
+        )
+        let block = TextTools.dictionaryBlock(d)
+        #expect(block.contains("\n- Docker\n- kubernetes ← кубер, кубернетес\n\nПояснения: Автор — Go-разработчик."))
+        #expect(!block.contains("пусто"))
     }
 
-    @Test func whisperPromptWithoutDictionary() {
-        var config = defaultConfig()
-        config.stt.initialPrompt = " Привет. "
-        config.stt.promptFromDictionary = false
-        config.dictionary.terms = ["Kubernetes"]
-        #expect(TextTools.whisperPrompt(stt: config.stt, dictionary: config.dictionary) == "Привет.")
+    @Test func defaultsGoToPrompt() {
+        let block = TextTools.dictionaryBlock(defaultConfig().dictionary)
+        #expect(block.contains("- Claude Code ← клод код, клауд код, cloud code"))
     }
 }

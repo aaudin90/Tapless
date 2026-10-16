@@ -3,7 +3,7 @@ import Foundation
 /// Слияние конфигов на уровне TOML-таблиц (после перевода в JSON-словари).
 enum ConfigMerge {
     /// Таблицы со свободными ключами: их ключи не сверяются со значениями по умолчанию.
-    static let freeFormTables: Set<String> = ["llm.env", "dictionary.replace"]
+    static let freeFormTables: Set<String> = ["llm.env", "dictionary.terms"]
 
     /// Таблицы со свободными именами записей: `[variants.<номер>]`, `[harness.<имя>]`, `[schemas.<имя>]`.
     /// Ключи внутри записи сверяются со списком допустимых.
