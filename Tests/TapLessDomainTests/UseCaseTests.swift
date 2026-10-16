@@ -1,0 +1,237 @@
+import Foundation
+import Testing
+import TapLessData
+@testable import TapLessDomain
+
+/// Встроенные значения по умолчанию — готовый полный AppConfig для тестов.
+/// TapLessData здесь только как источник фикстуры: сценарии от него не зависят.
+private func defaultConfig() -> AppConfig {
+    FileConfigRepository(fileURL: URL(fileURLWithPath: "/nonexistent")).defaults()
+}
+
+private actor RecordingLLM: LLMRepository {
+    private let reply: String
+    private(set) var requests: [LLMRequest] = []
+
+    init(reply: String) { self.reply = reply }
+
+    func complete(_ request: LLMRequest) async throws -> String {
+        requests.append(request)
+        return reply
+    }
+}
+
+private struct StubRecognizer: SpeechRecognizer {
+    let reply: String
+    func prepare(status: @escaping @Sendable (String) -> Void) async throws {}
+    func unload() async {}
+    func transcribe(_ samples: [Float], prompt: String) async throws -> String { reply }
+}
+
+private actor RecordingSetup: LocalLLMSetup {
+    private(set) var calls: [[OllamaTarget]] = []
+
+    func prepare(_ targets: [OllamaTarget], status: @escaping @Sendable (LocalLLMStatus) -> Void) async -> LocalLLMStatus {
+        calls.append(targets)
+        status(.checking)
+        return .ready
+    }
+}
+
+@Suite struct PrepareLocalLLMUseCaseTests {
+    @Test func defaultsUseOllama() async {
+        let config = defaultConfig()
+        let setup = RecordingSetup()
+        let useCase = PrepareLocalLLMUseCase(setup: setup, config: config)
+        let model = config.harnesses["ollama"]?.model ?? ""
+        #expect(!model.isEmpty)
+        #expect(useCase.targets == [OllamaTarget(url: "http://127.0.0.1:11434", model: model, parallel: 3)])
+        #expect(await useCase.execute(status: { _ in }) == .ready)
+        #expect(await setup.calls == [useCase.targets])
+    }
+
+    @Test func notUsedWithoutOllamaVariants() async {
+        var config = defaultConfig()
+        config.llm.harness = "claude"
+        let setup = RecordingSetup()
+        let useCase = PrepareLocalLLMUseCase(setup: setup, config: config)
+        #expect(!useCase.isUsed)
+        #expect(await useCase.execute(status: { _ in }) == .notUsed)
+        #expect(await setup.calls.isEmpty)
+    }
+}
+
+@Suite struct FormatTextUseCaseTests {
+    @Test func buildsRequestFromConfig() async throws {
+        var config = defaultConfig()
+        config.variants[1].model = "sonnet"
+        let llm = RecordingLLM(reply: "```\nГотово.\n```\n")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+
+        let result = try await useCase.execute(text: "привет", variantKey: 3)
+        #expect(result == "Готово.")
+
+        let request = try #require(await llm.requests.first)
+        #expect(request.variantKey == 3)
+        #expect(request.variantName == config.variants[1].name)
+        #expect(request.model == "sonnet")
+        #expect(request.harnessName == "ollama")
+        #expect(request.harness == config.harnesses["ollama"])
+        #expect(request.schema == nil)
+        #expect(request.input.contains("<transcript>\nпривет\n</transcript>"))
+        #expect(request.systemPrompt.hasSuffix(config.variants[1].prompt))
+        #expect(request.systemPrompt.contains("Claude Code"))
+        #expect(!request.systemPrompt.contains("{dictionary}"))
+    }
+
+    @Test func variantHarnessAndSchema() async throws {
+        var config = defaultConfig()
+        config.harnesses["fast"] = HarnessConfig(executable: "fast", args: ["{model}"])
+        config.variants[0].harness = "fast"
+        config.variants[0].schema = "text"
+        let llm = RecordingLLM(reply: "ok")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+        #expect(useCase.harnessName(forVariantKey: 1) == nil)
+        #expect(useCase.harnessName(forVariantKey: 2) == "fast")
+        #expect(useCase.harnessName(forVariantKey: 3) == "ollama")
+        #expect(useCase.harnessKind(forVariantKey: 2) == .process)
+        #expect(useCase.harnessKind(forVariantKey: 3) == .ollama)
+        #expect(useCase.harnessKind(forVariantKey: 9) == nil)
+
+        _ = try await useCase.execute(text: "a", variantKey: 2)
+        let request = try #require(await llm.requests.first)
+        #expect(request.harnessName == "fast")
+        #expect(request.harness.executable == "fast")
+        #expect(request.schema == LLMSchema(name: "text", config: config.schemas["text"]!))
+    }
+
+    @Test func unknownHarnessOrSchemaIsError() async {
+        var config = defaultConfig()
+        config.variants[0].harness = "nope"
+        config.variants[1].schema = "missing"
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config)
+        await #expect(throws: FormatTextError.unknownHarness("nope")) {
+            try await useCase.execute(text: "a", variantKey: 2)
+        }
+        await #expect(throws: FormatTextError.unknownSchema("missing")) {
+            try await useCase.execute(text: "a", variantKey: 3)
+        }
+    }
+
+    @Test func skipsDisabledVariants() async throws {
+        var config = defaultConfig()
+        config.variants[0].enabled = false
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config)
+        #expect(useCase.variants.count == config.variants.count - 1)
+        #expect(useCase.variants.first?.name == config.variants[1].name)
+        await #expect(throws: FormatTextError.unknownVariant(9)) {
+            try await useCase.execute(text: "a", variantKey: 9)
+        }
+    }
+
+    @Test func disabledVariantInTheMiddleShiftsKeys() {
+        var config = defaultConfig()
+        config.variants = (1...4).map { VariantConfig(name: "v\($0)", prompt: "p\($0)") }
+        config.variants[1].enabled = false
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config)
+        #expect(useCase.variantKeys == [2, 3, 4])
+        #expect([2, 3, 4].map { useCase.variant(forKey: $0)?.name } == ["v1", "v3", "v4"])
+    }
+
+    @Test func rawTextTakesKeyOneAndVariantsFollow() async throws {
+        let config = defaultConfig()
+        let llm = RecordingLLM(reply: "x")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+        #expect(config.rawTextKey == 1)
+        #expect(useCase.firstVariantKey == 2)
+        #expect(useCase.variantKeys == [2, 3])
+        #expect(useCase.variant(forKey: 2)?.name == config.variants[0].name)
+        await #expect(throws: FormatTextError.unknownVariant(1)) {
+            try await useCase.execute(text: "a", variantKey: 1)
+        }
+    }
+
+    @Test func withoutRawTextVariantsStartAtOne() {
+        var config = defaultConfig()
+        config.ui.showRaw = false
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config)
+        #expect(config.rawTextKey == nil)
+        #expect(useCase.variantKeys == [1, 2])
+        #expect(useCase.variant(forKey: 1)?.name == config.variants[0].name)
+    }
+
+    @Test func activeVariantsFitKeysUpToNine() async {
+        var config = defaultConfig()
+        config.variants = (1...12).map { VariantConfig(name: "v\($0)", prompt: "p\($0)") }
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config)
+        #expect(useCase.variants.count == 8)
+        #expect(useCase.variantKeys.last == 9)
+        await #expect(throws: FormatTextError.unknownVariant(10)) {
+            try await useCase.execute(text: "a", variantKey: 10)
+        }
+
+        config.ui.showRaw = false
+        #expect(FormatTextUseCase(llm: RecordingLLM(reply: "x"), config: config).variants.count == 9)
+    }
+
+    @Test func emptyReplyIsError() async {
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: " <transcript></transcript> "), config: defaultConfig())
+        await #expect(throws: FormatTextError.emptyOutput) {
+            try await useCase.execute(text: "a", variantKey: 2)
+        }
+    }
+}
+
+@Suite struct TranscribeSpeechUseCaseTests {
+    @Test func rejectsShortAndSilentClips() {
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: ""), config: defaultConfig())
+        let second = Int(AudioClip.sampleRate)
+
+        let short = AudioClip(samples: Array(repeating: 0.1, count: second / 10), peakLevel: 0.1)
+        #expect(useCase.rejection(for: short) == .tooShort(seconds: 0.1))
+
+        let silent = AudioClip(samples: Array(repeating: 0, count: second), peakLevel: 0.001)
+        #expect(useCase.rejection(for: silent) == .silence)
+
+        let speech = AudioClip(samples: Array(repeating: 0.1, count: second), peakLevel: 0.1)
+        #expect(useCase.rejection(for: speech) == nil)
+    }
+
+    @Test func rejectionBoundaries() {
+        var config = defaultConfig()
+        let second = Int(AudioClip.sampleRate)
+        config.general.minRecordingMs = 500
+        config.stt.silenceThreshold = 0.25
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: ""), config: config)
+
+        let exactDuration = AudioClip(samples: Array(repeating: 0.1, count: second / 2), peakLevel: 0.5)
+        #expect(useCase.rejection(for: exactDuration) == nil)
+
+        let exactPeak = AudioClip(samples: Array(repeating: 0.1, count: second), peakLevel: 0.25)
+        #expect(useCase.rejection(for: exactPeak) == nil)
+
+        let shortAndQuiet = AudioClip(samples: Array(repeating: 0, count: second / 10), peakLevel: 0.0)
+        #expect(useCase.rejection(for: shortAndQuiet) == .tooShort(seconds: 0.1))
+    }
+
+    @Test func zeroMinRecordingAllowsEmptyClip() {
+        var config = defaultConfig()
+        config.general.minRecordingMs = 0
+        config.stt.silenceThreshold = 0.25
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: ""), config: config)
+        #expect(useCase.rejection(for: AudioClip(samples: [], peakLevel: 0.5)) == nil)
+        #expect(useCase.rejection(for: AudioClip(samples: [], peakLevel: 0.0)) == .silence)
+    }
+
+    @Test func cleansTranscriptAndAppliesReplacements() async throws {
+        let raw = "<|ru|> Запусти клод   код и хайку. Продолжение следует..."
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: raw), config: defaultConfig())
+        let clip = AudioClip(samples: [0.1], peakLevel: 0.1)
+        #expect(try await useCase.execute(clip) == "Запусти Claude Code и Haiku.")
+    }
+
+    @Test func punctuationOnlyIsEmpty() async throws {
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: " ... "), config: defaultConfig())
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "")
+    }
+}
