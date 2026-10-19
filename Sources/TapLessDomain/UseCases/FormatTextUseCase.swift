@@ -64,8 +64,37 @@ public struct FormatTextUseCase: Sendable {
         harnessName(forVariantKey: key).flatMap { harnesses[$0]?.kind }
     }
 
+    /// Клавиши вариантов, которые идут через Ollama: их промпт имеет смысл прогревать.
+    public var warmUpKeys: [Int] {
+        variantKeys.filter { harnessKind(forVariantKey: $0) == .ollama }
+    }
+
     /// Оформляет текст вариантом с клавишей `key` (`firstVariantKey`…9).
     public func execute(text: String, variantKey key: Int) async throws -> String {
+        let request = try makeRequest(text: text, variantKey: key)
+        let output = try await llm.complete(request)
+        let cleaned = TextTools.cleanLLMOutput(output, stripFences: settings.stripCodeFences)
+        guard !cleaned.isEmpty else { throw FormatTextError.emptyOutput }
+        return cleaned
+    }
+
+    /// Прогревает кэш промпта Ollama для варианта с клавишей `key`: тот же системный промпт
+    /// и пустой `input_template`, ответ — один токен (`num_predict = 1`). Следующая диктовка
+    /// берёт общий префикс из кэша сервера и не разбирает промпт со словарём заново.
+    /// Варианты не через Ollama не трогает: CLI-запуск ничего не кэширует, а стоит денег.
+    public func warmUp(variantKey key: Int) async throws {
+        var request = try makeRequest(text: "", variantKey: key)
+        guard request.harness.kind == .ollama else { return }
+        var harness = request.harness
+        harness.options["num_predict"] = 1
+        // Без схемы: один токен ответа её всё равно не пройдёт.
+        request = LLMRequest(variantKey: request.variantKey, variantName: request.variantName + " (прогрев)",
+                             harnessName: request.harnessName, harness: harness, model: request.model,
+                             systemPrompt: request.systemPrompt, input: request.input)
+        _ = try await llm.complete(request)
+    }
+
+    private func makeRequest(text: String, variantKey key: Int) throws -> LLMRequest {
         guard let variant = variant(forKey: key) else { throw FormatTextError.unknownVariant(key) }
 
         let harnessName = config.harnessName(for: variant)
@@ -78,7 +107,7 @@ public struct FormatTextUseCase: Sendable {
         }
 
         let basePrompt = TextTools.fill(settings.basePrompt, ["dictionary": dictionaryBlock])
-        let request = LLMRequest(
+        return LLMRequest(
             variantKey: key,
             variantName: variant.name,
             harnessName: harnessName,
@@ -88,10 +117,5 @@ public struct FormatTextUseCase: Sendable {
             input: TextTools.fill(settings.inputTemplate, ["text": text]),
             schema: schema
         )
-
-        let output = try await llm.complete(request)
-        let cleaned = TextTools.cleanLLMOutput(output, stripFences: settings.stripCodeFences)
-        guard !cleaned.isEmpty else { throw FormatTextError.emptyOutput }
-        return cleaned
     }
 }

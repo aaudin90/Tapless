@@ -139,7 +139,7 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 
 Плейсхолдеры в `args`, `text_args`, `schema_args`: `{model}`, `{prompt_file}`, `{system_prompt}`, `{input}`, `{schema}`, `{schema_file}`. Программа также получает переменные `TAPLESS_MODEL`, `TAPLESS_PROMPT_FILE`, `TAPLESS_SCHEMA_FILE`, `TAPLESS_VARIANT` (клавиша), `TAPLESS_VARIANT_NAME`.
 
-Ключи `type = "ollama"`: `url` (по умолчанию `http://127.0.0.1:11434`), `think` (`false`, `true` или `"low"`/`"medium"`/`"high"`), `keep_alive` (`"1h"`, `"-1"` — всегда), `[harness.<имя>.options]` (`temperature`, `num_ctx`, `top_p` …). Ключи CLI для Ollama не нужны. Модель по умолчанию — `gemma4:e4b-it-q4_K_M`; тег пиши полностью: голый `gemma4:e4b` на Apple Silicon — другая, тяжёлая сборка. Недостающую модель TapLess скачивает сам при запуске.
+Ключи `type = "ollama"`: `url` (по умолчанию `http://127.0.0.1:11434`), `think` (`false`, `true` или `"low"`/`"medium"`/`"high"`), `keep_alive` (по умолчанию `"-1"` — модель не выгружается; `"1h"` — выгрузить через час простоя), `[harness.<имя>.options]` (`temperature`, `num_ctx`, `top_p` …). Ключи CLI для Ollama не нужны. Модель по умолчанию — `gemma4:e4b-it-q4_K_M`; тег пиши полностью: голый `gemma4:e4b` на Apple Silicon — другая, тяжёлая сборка. Недостающую модель TapLess скачивает сам при запуске.
 
 ### `[schemas.<имя>]` — структурированный ответ
 

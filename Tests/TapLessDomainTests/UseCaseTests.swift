@@ -188,6 +188,40 @@ private actor RecordingSetup: LocalLLMSetup {
             try await useCase.execute(text: "a", variantKey: 2)
         }
     }
+
+    @Test func warmUpSendsSamePromptWithOneToken() async throws {
+        var config = defaultConfig()
+        config.variants[0].schema = "text"
+        let llm = RecordingLLM(reply: "")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+        #expect(useCase.warmUpKeys == [2, 3])
+
+        try await useCase.warmUp(variantKey: 2)
+        _ = try? await useCase.execute(text: "привет", variantKey: 2)
+        let requests = await llm.requests
+        let warm = try #require(requests.first)
+        let real = try #require(requests.last)
+        #expect(warm.systemPrompt == real.systemPrompt)
+        #expect(warm.model == real.model)
+        #expect(warm.input == "<transcript>\n\n</transcript>")
+        #expect(real.input.hasPrefix("<transcript>\n"))
+        #expect(warm.schema == nil)
+        #expect(warm.harness.options["num_predict"] == 1)
+        #expect(real.harness.options["num_predict"] == nil)
+        #expect(warm.harness.options["num_ctx"] == real.harness.options["num_ctx"])
+    }
+
+    @Test func warmUpSkipsProcessHarness() async throws {
+        var config = defaultConfig()
+        config.harnesses["fast"] = HarnessConfig(executable: "fast", args: [])
+        config.variants[0].harness = "fast"
+        let llm = RecordingLLM(reply: "")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+        #expect(useCase.warmUpKeys == [3])
+
+        try await useCase.warmUp(variantKey: 2)
+        #expect(await llm.requests.isEmpty)
+    }
 }
 
 @Suite struct TranscribeSpeechUseCaseTests {

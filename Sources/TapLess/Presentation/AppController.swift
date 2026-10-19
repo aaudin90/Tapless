@@ -71,6 +71,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Подготовка Ollama: проверка сервера, запуск, скачивание моделей.
     private var localLLMStatus: LocalLLMStatus = .notUsed
     private var localLLMTask: Task<Void, Never>?
+    /// Прогрев кэша промпта Ollama после подготовки; новая диктовка его отменяет.
+    private var warmUpTask: Task<Void, Never>?
 
     init(_ deps: AppDependencies) {
         config = deps.config
@@ -131,6 +133,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         cancelJobs()
+        cancelWarmUp()
         localLLMTask?.cancel()
         _ = recorder.stop()
         Log.info("TapLess завершён", .app)
@@ -472,6 +475,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         updateStatusIcon()
 
+        // Прогрев делит с вариантами GPU и очередь harness — диктовка важнее.
+        cancelWarmUp()
         for key in format.variantKeys {
             runVariant(key: key, text: text, session: sid)
         }
@@ -747,7 +752,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.localLLMStatus = result
             Log.info("Ollama: \(result.text)", .llm)
             self.updateLocalLLMNote()
+            if result == .ready { self.warmUpLocalLLM() }
         }
+    }
+
+    /// Отправляет в Ollama системные промпты вариантов, чтобы первая диктовка взяла их из кэша
+    /// сервера: иначе промпт со словарём разбирается заново (секунды). Ошибки только в лог.
+    private func warmUpLocalLLM() {
+        let keys = format.warmUpKeys
+        guard !keys.isEmpty, warmUpTask == nil else { return }
+        // Пока идут варианты, прогрев только отнимет у них время.
+        if state == .transcribing || (state == .results && model.variants.contains { $0.status == .running }) {
+            Log.debug("Прогрев Ollama пропущен: идёт диктовка", .llm)
+            return
+        }
+        Log.info("Прогрев Ollama: варианты \(keys.map(String.init).joined(separator: ", "))", .llm)
+        let format = self.format
+        let started = Date()
+        warmUpTask = Task { [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                for key in keys {
+                    group.addTask {
+                        do {
+                            try await format.warmUp(variantKey: key)
+                            Log.info(String(format: "Прогрев Ollama: вариант %ld за %.2f с",
+                                            key, Date().timeIntervalSince(started)), .llm)
+                        } catch is CancellationError {
+                            Log.debug("Прогрев Ollama: вариант \(key) отменён", .llm)
+                        } catch {
+                            Log.warning("Прогрев Ollama: вариант \(key) не удался: \(error.localizedDescription)", .llm)
+                        }
+                    }
+                }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.warmUpTask = nil
+        }
+    }
+
+    private func cancelWarmUp() {
+        guard let warmUpTask else { return }
+        warmUpTask.cancel()
+        self.warmUpTask = nil
     }
 
     private func setLocalLLMStatus(_ status: LocalLLMStatus) {
