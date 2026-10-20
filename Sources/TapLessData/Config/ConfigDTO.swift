@@ -16,6 +16,7 @@ struct ConfigDTO: Decodable {
     let schemas: [String: Schema]
     let log: LogSection
     let dictionary: DictionarySection
+    let history: HistorySection
     /// Варианты по номерам: `[variants.1]`, `[variants.2]`… Номер задаёт порядок.
     let variants: [String: Variant]
 
@@ -94,6 +95,9 @@ struct ConfigDTO: Decodable {
         let inputTemplate: String
         let stripCodeFences: Bool
         let basePrompt: String
+        let revisePrompt: String
+        let reviseTemplate: String
+        let feedbackPrompt: String
         let env: [String: String]
 
         enum CodingKeys: String, CodingKey {
@@ -104,6 +108,9 @@ struct ConfigDTO: Decodable {
             case inputTemplate = "input_template"
             case stripCodeFences = "strip_code_fences"
             case basePrompt = "base_prompt"
+            case revisePrompt = "revise_prompt"
+            case reviseTemplate = "revise_template"
+            case feedbackPrompt = "feedback_prompt"
         }
     }
 
@@ -167,6 +174,21 @@ struct ConfigDTO: Decodable {
         enum CodingKeys: String, CodingKey {
             case level
             case includeText = "include_text"
+        }
+    }
+
+    struct HistorySection: Decodable {
+        let enabled: Bool
+        let dir: String
+        let saveAudio: Bool
+        let retentionDays: Int
+        let maxSizeMb: Int
+
+        enum CodingKeys: String, CodingKey {
+            case enabled, dir
+            case saveAudio = "save_audio"
+            case retentionDays = "retention_days"
+            case maxSizeMb = "max_size_mb"
         }
     }
 
@@ -253,6 +275,9 @@ struct ConfigDTO: Decodable {
                 inputTemplate: llm.inputTemplate,
                 stripCodeFences: llm.stripCodeFences,
                 basePrompt: llm.basePrompt,
+                revisePrompt: llm.revisePrompt,
+                reviseTemplate: llm.reviseTemplate,
+                feedbackPrompt: llm.feedbackPrompt,
                 env: llm.env
             ),
             harnesses: harness.reduce(into: [:]) { result, item in
@@ -263,6 +288,13 @@ struct ConfigDTO: Decodable {
             },
             log: LogConfig(level: log.level, includeText: log.includeText),
             dictionary: DictionaryConfig(terms: dictionary.terms, notes: dictionary.notes),
+            history: HistoryConfig(
+                enabled: history.enabled,
+                dir: history.dir,
+                saveAudio: history.saveAudio,
+                retentionDays: history.retentionDays,
+                maxSizeMB: history.maxSizeMb
+            ),
             variants: try orderedVariants().map { number, v in
                 guard let prompt = v.prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw ConfigError.schema("variants.\(number): не задан prompt")

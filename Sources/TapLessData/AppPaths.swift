@@ -52,6 +52,15 @@ public struct AppPaths: Sendable {
         }
     }
 
+    /// Папка истории диктовок: пусто — `~/.cache/tapless`, иначе указанный путь (`~` раскрывается).
+    public static func historyRoot(custom: String) -> URL {
+        let trimmed = custom.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/tapless", isDirectory: true)
+        }
+        return URL(fileURLWithPath: ShellTools.expandTilde(trimmed), isDirectory: true)
+    }
+
     public func createDirectories() {
         let fm = FileManager.default
         for dir in [support, models, run, llmWorkdir,

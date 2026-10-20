@@ -7,6 +7,11 @@ struct PopupView: View {
     @ObservedObject var model: PopupModel
     var onSelect: (Int) -> Void
     var onClose: () -> Void
+    var onEdit: (Int) -> Void
+    var onSubmitEdit: () -> Void
+    var onCancelEdit: () -> Void
+    var onToggleFeedbackRecording: () -> Void
+    var onUndo: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -14,28 +19,20 @@ struct PopupView: View {
 
             if model.phase == .results || model.phase == .transcribing {
                 if let rawKey = model.rawKey {
-                    Button { onSelect(rawKey) } label: {
-                        VariantRow(key: rawKey,
-                                   name: "Как распознано",
-                                   status: model.rawText.isEmpty ? .running : .done(model.rawText),
-                                   seconds: nil,
-                                   isPending: model.pendingKey == rawKey,
-                                   isRaw: true,
-                                   maxLines: model.maxLines)
-                    }
-                    .buttonStyle(VariantRowButtonStyle())
+                    row(key: rawKey,
+                        name: "Как распознано" + Self.revisionMark(model.rawHistory.count),
+                        status: model.rawStatus,
+                        seconds: nil,
+                        revisions: model.rawHistory.count,
+                        isRaw: true)
                 }
                 ForEach(model.variants) { variant in
-                    Button { onSelect(variant.id) } label: {
-                        VariantRow(key: variant.id,
-                                   name: variant.name,
-                                   status: variant.status,
-                                   seconds: variant.seconds,
-                                   isPending: model.pendingKey == variant.id,
-                                   isRaw: false,
-                                   maxLines: model.maxLines)
-                    }
-                    .buttonStyle(VariantRowButtonStyle())
+                    row(key: variant.id,
+                        name: variant.name + Self.revisionMark(variant.history.count),
+                        status: variant.status,
+                        seconds: variant.seconds,
+                        revisions: variant.history.count,
+                        isRaw: false)
                 }
             }
 
@@ -50,6 +47,63 @@ struct PopupView: View {
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
         )
         .environment(\.colorScheme, .dark)
+    }
+
+    /// Строка варианта, кнопка правки справа и поле замечаний под строкой, если её правят.
+    @ViewBuilder
+    private func row(key: Int, name: String, status: VariantState.Status, seconds: Double?,
+                     revisions: Int, isRaw: Bool) -> some View {
+        let isEditing = model.editingKey == key
+        HStack(alignment: .top, spacing: 6) {
+            Button { onSelect(key) } label: {
+                VariantRow(key: key,
+                           name: name,
+                           status: status,
+                           seconds: seconds,
+                           isPending: model.pendingKey == key,
+                           isRaw: isRaw,
+                           maxLines: model.maxLines)
+            }
+            .buttonStyle(VariantRowButtonStyle())
+
+            if model.phase == .results {
+                let canAct = model.editingKey == nil && status.isDone
+                VStack(spacing: 4) {
+                    Button { onEdit(key) } label: {
+                        RowIcon(symbol: isEditing ? "pencil.circle.fill" : "pencil",
+                                isEnabled: canAct, isActive: isEditing)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canAct)
+                    .help("Править по замечаниям (⌥\(key))")
+
+                    if revisions > 0 {
+                        Button { onUndo(key) } label: {
+                            RowIcon(symbol: "arrow.uturn.backward", isEnabled: canAct, isActive: false)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canAct)
+                        .help("Вернуть текст до правки (⌥⇧\(key))")
+                    }
+                }
+                .padding(.top, 6)
+            }
+        }
+        if isEditing {
+            FeedbackEditor(model: model,
+                           onSubmit: onSubmitEdit,
+                           onCancel: onCancelEdit,
+                           onToggleRecording: onToggleFeedbackRecording)
+        }
+    }
+
+    /// Пометка в имени строки: «· правка», после нескольких правок — с их числом.
+    private static func revisionMark(_ count: Int) -> String {
+        switch count {
+        case 0: return ""
+        case 1: return " · правка"
+        default: return " · правка \(count)"
+        }
     }
 
     @ViewBuilder
@@ -70,9 +124,16 @@ struct PopupView: View {
                 Text("Распознаю…").font(.system(size: 14, weight: .semibold))
                 Spacer()
             case .results:
-                Image(systemName: "text.badge.checkmark")
-                    .foregroundStyle(.secondary)
-                Text("Выберите вариант").font(.system(size: 14, weight: .semibold))
+                if let key = model.editingKey {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(.secondary)
+                    Text("Правка строки \(key): напишите или надиктуйте замечания")
+                        .font(.system(size: 14, weight: .semibold))
+                } else {
+                    Image(systemName: "text.badge.checkmark")
+                        .foregroundStyle(.secondary)
+                    Text("Выберите вариант").font(.system(size: 14, weight: .semibold))
+                }
                 Spacer()
             case .message(let text):
                 Image(systemName: "exclamationmark.bubble")
@@ -132,12 +193,23 @@ struct PopupView: View {
         switch model.phase {
         case .recording:
             return model.hotkeyDisplay.isEmpty ? "Esc — отмена" : "\(model.hotkeyDisplay) — стоп · Esc — отмена"
+        case .results where model.editingKey != nil:
+            var parts = ["↩ — подтвердить", "⇧↩ — новая строка"]
+            if !model.hotkeyDisplay.isEmpty { parts.append("\(model.hotkeyDisplay) — надиктовать") }
+            parts.append("Esc — отмена правки")
+            return parts.joined(separator: " · ")
         case .transcribing, .results:
             let keys = (model.rawKey.map { [$0] } ?? []) + model.variants.map(\.id)
             var parts: [String] = []
             if let first = keys.min(), let last = keys.max() {
                 parts.append(first == last ? "\(first) — вставить" : "\(first)–\(last) — вставить")
                 parts.append("⇧+цифра — только копировать")
+                if model.phase == .results {
+                    parts.append("⌥+цифра — править")
+                    if !model.rawHistory.isEmpty || model.variants.contains(where: { !$0.history.isEmpty }) {
+                        parts.append("⌥⇧+цифра — откатить правку")
+                    }
+                }
             }
             parts.append("Esc — закрыть")
             return parts.joined(separator: " · ")
@@ -151,6 +223,207 @@ struct PopupView: View {
     private static func format(_ seconds: TimeInterval) -> String {
         let s = max(0, Int(seconds))
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+private extension VariantState.Status {
+    var isDone: Bool {
+        if case .done = self { return true }
+        return false
+    }
+}
+
+/// Круглая кнопка справа от строки: правка или откат.
+private struct RowIcon: View {
+    let symbol: String
+    let isEnabled: Bool
+    let isActive: Bool
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isActive ? Color.accentColor : Color.white.opacity(isEnabled ? 0.75 : 0.25))
+            .frame(width: 24, height: 24)
+            .background(Circle().fill(Color.white.opacity(isEnabled ? 0.08 : 0.03)))
+            .contentShape(Circle())
+    }
+}
+
+/// Поле замечаний к строке: ввод руками или диктовка, «Отмена» и «Подтвердить».
+private struct FeedbackEditor: View {
+    @ObservedObject var model: PopupModel
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+    let onToggleRecording: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            FeedbackTextView(text: model.feedback,
+                             isEditable: model.feedbackPhase == .idle,
+                             onChange: { model.feedback = $0 },
+                             onSubmit: onSubmit)
+                .frame(height: 76)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.black.opacity(0.25))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1)
+                )
+
+            HStack(spacing: 8) {
+                Button(action: onToggleRecording) {
+                    HStack(spacing: 6) {
+                        switch model.feedbackPhase {
+                        case .idle:
+                            Image(systemName: "mic.fill")
+                            Text(model.hotkeyDisplay.isEmpty ? "Надиктовать" : "Надиктовать · \(model.hotkeyDisplay)")
+                        case .recording:
+                            PulsingDot()
+                            Text("Стоп")
+                            LevelMeter(levels: Array(model.levels.suffix(16)))
+                        case .transcribing:
+                            ProgressView().controlSize(.mini)
+                            Text("Распознаю…")
+                        case .polishing:
+                            ProgressView().controlSize(.mini)
+                            Text("Исправляю…")
+                        }
+                    }
+                }
+                .buttonStyle(EditorButtonStyle(prominent: false))
+                .disabled(model.feedbackPhase == .transcribing || model.feedbackPhase == .polishing)
+
+                Spacer(minLength: 8)
+
+                Button("Отмена", action: onCancel)
+                    .buttonStyle(EditorButtonStyle(prominent: false))
+                Button("Подтвердить ↩", action: onSubmit)
+                    .buttonStyle(EditorButtonStyle(prominent: true))
+                    .disabled(!canSubmit)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        )
+    }
+
+    private var canSubmit: Bool {
+        model.feedbackPhase == .idle && !model.feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private struct EditorButtonStyle: ButtonStyle {
+    let prominent: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        EditorButton(configuration: configuration, prominent: prominent)
+    }
+}
+
+private struct EditorButton: View {
+    let configuration: ButtonStyleConfiguration
+    let prominent: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(prominent ? Color.black : Color.white.opacity(0.9))
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(
+                Capsule().fill(prominent ? Color.accentColor.opacity(0.95) : Color.white.opacity(0.10))
+            )
+            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
+            .contentShape(Capsule())
+    }
+}
+
+/// Многострочное поле на NSTextView: ↩ — подтвердить, ⇧↩ / ⌥↩ — новая строка.
+/// Без `@FocusState` и `@Binding` из SwiftUI: фокус ставим сами через `makeFirstResponder`.
+private struct FeedbackTextView: NSViewRepresentable {
+    let text: String
+    let isEditable: Bool
+    let onChange: (String) -> Void
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+
+        let textView = FocusingTextView()
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.font = .systemFont(ofSize: 13)
+        textView.textColor = .white
+        textView.insertionPointColor = .white
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.string = text
+        textView.delegate = context.coordinator
+        scroll.documentView = textView
+        context.coordinator.parent = self
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scroll.documentView as? NSTextView else { return }
+        textView.isEditable = isEditable
+        if textView.string != text {
+            // Текст пришёл не из поля (диктовка): курсор — в конец.
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            textView.scrollToEndOfDocument(nil)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: FeedbackTextView?
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent?.onChange(textView.string)
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                textView.insertNewlineIgnoringFieldEditor(nil)
+            } else {
+                parent?.onSubmit()
+            }
+            return true
+        }
+    }
+
+    /// Берёт фокус, как только появляется в окне.
+    final class FocusingTextView: NSTextView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
+                window.makeFirstResponder(self)
+            }
+        }
     }
 }
 

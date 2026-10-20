@@ -90,7 +90,7 @@ private func makeSession() -> URLSession {
 private func makeSettings(timeout: Double = 30) -> LLMConfig {
     LLMConfig(harness: "ollama", model: "m", timeoutSeconds: timeout, shell: "/bin/zsh", loginShell: true,
               extraPath: [], workdir: "", inputTemplate: "{text}", stripCodeFences: false,
-              basePrompt: "", env: [:])
+              basePrompt: "", revisePrompt: "", reviseTemplate: "", feedbackPrompt: "", env: [:])
 }
 
 private func uniqueHost() -> String { "h" + UUID().uuidString.lowercased() + ".test" }

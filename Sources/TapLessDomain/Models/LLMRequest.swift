@@ -12,6 +12,9 @@ public struct LLMSchema: Sendable, Equatable {
     }
 }
 
+/// Назначение запроса к LLM — для истории и логов.
+public enum LLMPurpose: String, Sendable, Equatable { case variant, revision, feedback, warmUp }
+
 /// Один запрос на оформление текста внешней LLM-программой (один вариант).
 public struct LLMRequest: Sendable, Equatable {
     /// Клавиша варианта: 1…9.
@@ -25,9 +28,11 @@ public struct LLMRequest: Sendable, Equatable {
     /// Текст для LLM: `input_template` с подставленной расшифровкой.
     public let input: String
     public let schema: LLMSchema?
+    public let purpose: LLMPurpose
 
     public init(variantKey: Int, variantName: String, harnessName: String, harness: HarnessConfig,
-                model: String, systemPrompt: String, input: String, schema: LLMSchema? = nil) {
+                model: String, systemPrompt: String, input: String, schema: LLMSchema? = nil,
+                purpose: LLMPurpose = .variant) {
         self.variantKey = variantKey
         self.variantName = variantName
         self.harnessName = harnessName
@@ -36,5 +41,6 @@ public struct LLMRequest: Sendable, Equatable {
         self.systemPrompt = systemPrompt
         self.input = input
         self.schema = schema
+        self.purpose = purpose
     }
 }

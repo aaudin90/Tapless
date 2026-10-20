@@ -134,20 +134,42 @@ hotkey ─► stopRecording ─(tail_ms)─► finishRecording
         finishVariant ─► PopupModel.variants[N] = done / failed
             │
   цифра ────┴─► select ─► deliver ─► Paster.deliver (clipboard + ⌘V в targetApp)
+
+✎ / ⌥+цифра ─► beginEdit ─► state = editing, поле замечаний (панель key)
+            │  ⌥Э ─► запись замечания ─► Whisper ─► FormatTextUseCase.cleanFeedback
+            │       (llm.feedback_prompt, ключ 0; ошибка — текст как распознан) ─► model.feedback
+  ↩ ────────┴─► submitEdit ─► FormatTextUseCase.revise
+                 systemPrompt = base_prompt + variant.prompt + revise_prompt
+                 input        = revise_template({text}, {previous}, {feedback})
+               ─► finishRevision ─► строка = done(новый текст), прежний — в history
+                                    ошибка: прежний текст + model.note
+↶ / ⌥⇧+цифра ─► undoRevision ─► строка = последняя версия из history
+
+История (DictationHistoryUseCase ─► FileHistoryRepository, ~/.cache/tapless):
+  finishRecording ─► .recording (WAV), .transcript      deliver ─► .delivered, затем prune
+  запись замечания ─► .feedbackRecording, .feedbackTranscript
+  любой вызов LLM в HistoryContext.$session.withValue(sid) ─► HistoryLLMRepository ─► .llmCall
 ```
+
+### История диктовок
+- **Что пишется.** Пишет `DictationHistoryUseCase` (Domain) через протокол `HistoryRepository`. Реализация — `FileHistoryRepository` (Data, `actor`). Вызовы LLM записывает декоратор `HistoryLLMRepository` вокруг `RoutingLLMRepository` (собирается в `main.swift`).
+- **Привязка вызова LLM к диктовке.** Сессию декоратор берёт из `@TaskLocal HistoryContext.session`. Новый вызов LLM от имени диктовки оборачивайте в `HistoryContext.$session.withValue(sid) { … }`, иначе он в историю не попадёт. Прогрев (`LLMPurpose.warmUp`) не пишется.
+- **Запись не тормозит работу.** `AppController.recordHistory` пишет в фоновой задаче и берёт время события в момент вызова. Ошибки ввода-вывода — только в лог.
+- **Чистка.** `pruneHistory` запускается при старте и после вставки, одновременно идёт одна. Чистит по `retention_days` и `max_size_mb`, но последнюю диктовку не удаляет. При `enabled = false` чистка тоже идёт.
 
 ### Ключевые инварианты
 
-- **State machine** в `AppController`: `idle → recording → transcribing → results → idle`, плюс `message` для уведомлений. Переходы — только на главном потоке (`@MainActor`).
+- **State machine** в `AppController`: `idle → recording → transcribing → results → idle`, плюс `message` для уведомлений и `editing` (правка строки, из `results` и обратно). Переходы — только на главном потоке (`@MainActor`).
 - **Сессии.** Каждая запись создаёт новый `session = UUID()`. Все асинхронные колбэки (распознавание, варианты, автостоп) сверяют `session == sid` и молча выходят, если сессия сменилась. Новый асинхронный код должен соблюдать это правило.
 - **Отмена вариантов.** Каждый вариант — отдельный `Task` в `jobs`. `cancelJobs()` отменяет их; `ProcessLLMRepository` при отмене завершает процесс, `OllamaLLMRepository` — HTTP-запрос; оба бросают `CancellationError`, которую `finishVariant` игнорирует.
 - **Старт записи.** `startRecording` сначала проверяет микрофон и запускает `AudioRecorder`, и только потом отменяет прежние варианты и меняет `session`. Если запись не стартовала, прежние результаты доступны через «Показать последний результат».
 - **Распознавание** идёт в `transcribeTask`; `Esc` и новая запись его отменяют. Пока задача жива (Whisper может ещё работать после отмены), «Перезагрузить модель» недоступна (`canReloadModel`).
 - **Смена микрофона.** `AudioRecorder.onConfigurationChange` → `AppController.audioConfigurationChanged`: через 300 мс движок перезапускается на новом устройстве с сохранением записанного; если не вышло — `stopRecording` и распознавание того, что есть.
 - **Клавиши панели.** Раскладку задаёт Domain: `AppConfig.rawTextKey` (`1` при `ui.show_raw`, иначе nil), `firstVariantKey` (2 или 1), `maxVariants` (8 или 9). `FormatTextUseCase` принимает и возвращает клавиши (`variantKeys`, `variant(forKey:)`), не индексы; `VariantState.id`, `LLMRequest.variantKey`, `prompt-<N>.txt` и `TAPLESS_VARIANT` — тоже клавиша. Сырой текст выбирается клавишей `model.rawKey`.
-- **Отложенный выбор.** Цифру можно нажать до готовности варианта: она сохраняется в `model.pendingKey`, и вставка происходит в `finishVariant`.
+- **Отложенный выбор.** Цифру можно нажать до готовности варианта: она сохраняется в `model.pendingKey`, и вставка происходит в `finishVariant` (для правки — в `finishRevision`).
+- **Правка строки** (`state == .editing`). Вход — ✎ или `⌥+цифра`, только из `results` и только для готовой строки (`FormatTextUseCase.canRevise`). В правке сняты цифры: Carbon перехватил бы их раньше поля; остаётся `Esc` (`escapePressed`: отмена записи замечания, потом — отмена правки). Главная клавиша пишет **замечание** (`feedbackTask`, свой автостоп; после Whisper — чистка `cleanFeedback`, фаза `polishing`), а не новую диктовку; ошибки — в `model.note`, не `showMessage`. Панель — `PopupPanel`: `canBecomeKey` только в правке (`beginEditing` / `endEditing`), приложение-цель остаётся активным. Правка — `Task` в `jobs` и `revisionJobs[key]`: новая правка той же строки отменяет прежнюю. Если правка не удалась, строка получает прежний текст. Удачная правка кладёт прежний текст в историю строки (`VariantState.history`, для сырого текста — `model.rawHistory`); `undoRevision` (↶, `⌥⇧+цифра`) снимает по одной версии до исходной. Сырой текст правится через `llm.harness`, `rawText` остаётся исходной расшифровкой (`{text}`), результат — `model.rawRevision`. Любой выход из `editing` идёт через `leaveEditing`: он останавливает запись замечания и возвращает клавиатуру.
 - **Клавиша «Показать последний результат»** (`general.show_last_hotkey`, по умолчанию `option+semicolon`, `⌥Ж`) регистрируется глобально при запуске, как и клавиша записи. `showLastHotKeyDown`: в `results` закрывает панель, в `idle` / `message` вызывает `showLastResult` (или сообщение, если результатов нет), во время записи и распознавания игнорируется. Пустая строка выключает клавишу.
-- **Сессионные клавиши.** Цифры, `⇧+цифры` и `Esc` регистрируются глобально только пока панель открыта (`registerSessionKeys` / `unregisterSessionKeys`). Любой путь закрытия панели обязан снимать их, иначе цифры перестанут работать в других приложениях.
+- **Сессионные клавиши.** Цифры, `⇧+цифры`, `⌥+цифры`, `⌥⇧+цифры` и `Esc` регистрируются глобально только пока панель открыта (`registerSessionKeys` / `unregisterSessionKeys`). Любой путь закрытия панели обязан снимать их, иначе цифры перестанут работать в других приложениях.
 - **Строки панели** — `Button` со стилем `VariantRowButtonStyle`: подсветка под курсором и сжатие при нажатии. Наведение ловит свой `NSTrackingArea` с `.activeAlways` (`HoverTracker`), потому что TapLess не активное приложение; после `orderOut` / показа панели он сверяет курсор по `didChangeOcclusionState`.
 - **Панель не забирает фокус** (`.nonactivatingPanel`). `targetApp` запоминается в момент старта записи; вставка идёт туда.
 - **Команда LLM** запускается через `posix_spawn` в отдельной группе процессов (`ProcessJob`): таймаут и отмена шлют SIGTERM всей группе, через 2 с — SIGKILL; после выхода shell оставшиеся в группе потомки добиваются. Не возвращайтесь к `Foundation.Process`: он не умеет группу, и потомки (`claude`) остаются сиротами. Harness запускается через `llm.shell` (`/bin/zsh`) как `-l -c '"$0" "$@"' executable args…`: аргументы идут как argv, без shell-разбора, поэтому плейсхолдеры (`{model}`, `{prompt_file}`, `{system_prompt}`, `{input}`, `{schema}`, `{schema_file}`) подставляются **без** экранирования. Не добавляйте `exec` в скрипт запуска: `executable` может быть функцией shell из `~/.zshenv` (например, `claude-proxy-dang`), а функции через `exec` не запускаются. Код выхода 127 — «программа не найдена» (`LLMError.notFound`). Рабочая папка по умолчанию — пустая `~/Library/Application Support/TapLess/llm-workdir`, чтобы `claude` не подхватил чужой `CLAUDE.md`.
@@ -188,6 +210,7 @@ hotkey ─► stopRecording ─(tail_ms)─► finishRecording
 | Конфиг пользователя | `~/.config/tapless.toml` (путь меняется env `TAPLESS_CONFIG`) |
 | Модели Whisper | `~/Library/Application Support/TapLess/models` |
 | Промпты и схемы вариантов | `~/Library/Application Support/TapLess/run/prompt-<N>.txt`, `schema-<N>.json` |
+| История диктовок | `~/.cache/tapless/history/<гггг-мм-дд>/<чч-мм-сс>_<сессия>/` (`session.json`, `audio.wav`, `transcript.txt`, `llm/`), промпты — `~/.cache/tapless/prompts/<id>.txt`; папка — `history.dir` |
 | Рабочая папка LLM | `~/Library/Application Support/TapLess/llm-workdir` |
 | Лог | `~/Library/Logs/TapLess/TapLess.log` (при > 5 МБ переименовывается в `TapLess.log.1`; в DEBUG-сборке дублируется в stderr) и Unified Logging: подсистема `io.github.aaudin90.tapless`, `/usr/bin/log stream --level debug --predicate 'subsystem == "io.github.aaudin90.tapless"'` (в zsh `log` — встроенная команда, поэтому полный путь) |
 

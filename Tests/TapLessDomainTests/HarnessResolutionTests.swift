@@ -13,11 +13,13 @@ private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String =
                        initialPrompt: "", silenceThreshold: 0, dropPhrases: []),
         llm: LLMConfig(harness: llmHarness, model: llmModel, timeoutSeconds: 30, shell: "/bin/zsh",
                        loginShell: true, extraPath: [], workdir: "", inputTemplate: "{text}",
-                       stripCodeFences: false, basePrompt: "", env: [:]),
+                       stripCodeFences: false, basePrompt: "", revisePrompt: "",
+                       reviseTemplate: "{text}{previous}{feedback}", feedbackPrompt: "", env: [:]),
         harnesses: harnesses,
         schemas: [:],
         log: LogConfig(level: "info", includeText: false),
         dictionary: DictionaryConfig(terms: [:], notes: ""),
+        history: HistoryConfig(enabled: true, dir: "", saveAudio: true, retentionDays: 30, maxSizeMB: 1024),
         variants: variants)
 }
 

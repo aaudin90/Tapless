@@ -28,7 +28,7 @@ public enum LogLevel: Int, Sendable, Comparable, CaseIterable {
 
 /// Подсистема, к которой относится запись. В Console.app это категория `os_log`.
 public enum LogCategory: String, Sendable, CaseIterable {
-    case app, config, hotkey, audio, stt, llm, paste, ui
+    case app, config, hotkey, audio, stt, llm, paste, ui, history
 }
 
 /// Фасад лога. Куда писать, решает слой Data: он подключает приёмник при запуске

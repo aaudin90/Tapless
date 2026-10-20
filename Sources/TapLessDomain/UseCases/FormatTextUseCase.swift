@@ -25,12 +25,16 @@ public struct FormatTextUseCase: Sendable {
     /// Клавиша первого варианта: 2, если клавиша 1 занята сырым текстом, иначе 1.
     public let firstVariantKey: Int
 
+    /// Ключ запроса чистки замечаний: `prompt-0.txt`, `TAPLESS_VARIANT=0` — не пересекается с клавишами строк.
+    public static let feedbackKey = 0
+
     private let llm: LLMRepository
     private let config: AppConfig
     private let settings: LLMConfig
     private let harnesses: [String: HarnessConfig]
     private let schemas: [String: SchemaConfig]
     private let dictionaryBlock: String
+    private let rawTextKey: Int?
 
     public init(llm: LLMRepository, config: AppConfig) {
         self.llm = llm
@@ -41,6 +45,7 @@ public struct FormatTextUseCase: Sendable {
         self.variants = config.activeVariants
         self.firstVariantKey = config.firstVariantKey
         self.dictionaryBlock = TextTools.dictionaryBlock(config.dictionary)
+        self.rawTextKey = config.rawTextKey
     }
 
     /// Клавиши включённых вариантов по порядку.
@@ -90,32 +95,105 @@ public struct FormatTextUseCase: Sendable {
         // Без схемы: один токен ответа её всё равно не пройдёт.
         request = LLMRequest(variantKey: request.variantKey, variantName: request.variantName + " (прогрев)",
                              harnessName: request.harnessName, harness: harness, model: request.model,
-                             systemPrompt: request.systemPrompt, input: request.input)
+                             systemPrompt: request.systemPrompt, input: request.input,
+                             purpose: .warmUp)
         _ = try await llm.complete(request)
+    }
+
+    /// Можно ли править строку с клавишей `key`: вариант или сырой текст (`rawTextKey`).
+    public func canRevise(key: Int) -> Bool {
+        variant(forKey: key) != nil || key == rawTextKey
+    }
+
+    /// Тип harness строки `key` с учётом сырого текста (для сырого — `llm.harness`).
+    public func harnessKind(forRevisionKey key: Int) -> HarnessKind? {
+        if let kind = harnessKind(forVariantKey: key) { return kind }
+        guard key == rawTextKey else { return nil }
+        return harnesses[settings.harness]?.kind
+    }
+
+    /// Перегенерирует строку `key` по замечаниям автора. `transcript` — исходная расшифровка,
+    /// `previous` — текущий текст строки, `feedback` — замечания.
+    public func revise(transcript: String, previous: String, feedback: String, key: Int) async throws -> String {
+        let request = try makeReviseRequest(transcript: transcript, previous: previous, feedback: feedback, key: key)
+        let output = try await llm.complete(request)
+        let cleaned = TextTools.cleanLLMOutput(output, stripFences: settings.stripCodeFences)
+        guard !cleaned.isEmpty else { throw FormatTextError.emptyOutput }
+        return cleaned
+    }
+
+    /// Чистить ли надиктованные замечания: `llm.feedback_prompt` не пуст.
+    public var cleansFeedback: Bool {
+        !settings.feedbackPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Тип harness чистки замечаний (`llm.harness`); nil — такого harness нет.
+    public var feedbackHarnessKind: HarnessKind? {
+        harnesses[settings.harness]?.kind
+    }
+
+    /// Чистит надиктованные замечания: ошибки распознавания, термины по словарю, пунктуация.
+    /// Пустой `llm.feedback_prompt` — возвращает текст как есть, без LLM.
+    public func cleanFeedback(_ text: String) async throws -> String {
+        guard cleansFeedback else { return text }
+        let request = try buildRequest(
+            key: Self.feedbackKey, variant: nil, nameSuffix: "", name: "Замечание",
+            taskPrompt: settings.feedbackPrompt, revisePrompt: nil,
+            input: TextTools.fill(settings.inputTemplate, ["text": text]), purpose: .feedback)
+        let output = try await llm.complete(request)
+        let cleaned = TextTools.cleanLLMOutput(output, stripFences: settings.stripCodeFences)
+        guard !cleaned.isEmpty else { throw FormatTextError.emptyOutput }
+        return cleaned
     }
 
     private func makeRequest(text: String, variantKey key: Int) throws -> LLMRequest {
         guard let variant = variant(forKey: key) else { throw FormatTextError.unknownVariant(key) }
+        return try buildRequest(
+            key: key, variant: variant, nameSuffix: "",
+            taskPrompt: variant.prompt, revisePrompt: nil,
+            input: TextTools.fill(settings.inputTemplate, ["text": text]), purpose: .variant)
+    }
 
-        let harnessName = config.harnessName(for: variant)
+    private func makeReviseRequest(transcript: String, previous: String, feedback: String, key: Int) throws -> LLMRequest {
+        let input = TextTools.fill(settings.reviseTemplate,
+                                   ["text": transcript, "previous": previous, "feedback": feedback])
+        if let variant = variant(forKey: key) {
+            return try buildRequest(key: key, variant: variant, nameSuffix: " (правка)",
+                                    taskPrompt: variant.prompt, revisePrompt: settings.revisePrompt, input: input, purpose: .revision)
+        }
+        guard key == rawTextKey else { throw FormatTextError.unknownVariant(key) }
+        return try buildRequest(key: key, variant: nil, nameSuffix: " (правка)",
+                                taskPrompt: nil, revisePrompt: settings.revisePrompt, input: input, purpose: .revision)
+    }
+
+    /// Общая сборка запроса. `variant == nil` — сырой текст: harness и модель из `llm`, без схемы.
+    private func buildRequest(key: Int, variant: VariantConfig?, nameSuffix: String, name: String? = nil,
+                              taskPrompt: String?, revisePrompt: String?, input: String,
+                              purpose: LLMPurpose) throws -> LLMRequest {
+        let harnessName = variant.map { config.harnessName(for: $0) } ?? settings.harness
         guard let harness = harnesses[harnessName] else { throw FormatTextError.unknownHarness(harnessName) }
 
         var schema: LLMSchema?
-        if let schemaName = variant.schema {
+        if let schemaName = variant?.schema {
             guard let config = schemas[schemaName] else { throw FormatTextError.unknownSchema(schemaName) }
             schema = LLMSchema(name: schemaName, config: config)
         }
 
-        let basePrompt = TextTools.fill(settings.basePrompt, ["dictionary": dictionaryBlock])
+        var systemPrompt = TextTools.fill(settings.basePrompt, ["dictionary": dictionaryBlock])
+        if let taskPrompt { systemPrompt += "\n" + taskPrompt }
+        if let revisePrompt { systemPrompt += "\n\n" + revisePrompt }
+
+        let model = variant.map { config.model(for: $0) } ?? (harness.model.isEmpty ? settings.model : harness.model)
         return LLMRequest(
             variantKey: key,
-            variantName: variant.name,
+            variantName: (name ?? variant?.name ?? "Как распознано") + nameSuffix,
             harnessName: harnessName,
             harness: harness,
-            model: config.model(for: variant),
-            systemPrompt: basePrompt + "\n" + variant.prompt,
-            input: TextTools.fill(settings.inputTemplate, ["text": text]),
-            schema: schema
+            model: model,
+            systemPrompt: systemPrompt,
+            input: input,
+            schema: schema,
+            purpose: purpose
         )
     }
 }

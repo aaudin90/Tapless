@@ -9,7 +9,7 @@ import TapLessDomain
 @MainActor
 final class PopupController {
     private let model: PopupModel
-    private var panel: NSPanel?
+    private var panel: PopupPanel?
     private var hostingView: FirstMouseHostingView<PopupView>?
     private var cancellable: AnyCancellable?
     // Верхний край и центр окна. Размер меняется под содержимое, а якорь — только
@@ -21,6 +21,11 @@ final class PopupController {
     var position = "top"
     var onSelect: (Int) -> Void = { _ in }
     var onClose: () -> Void = {}
+    var onEdit: (Int) -> Void = { _ in }
+    var onSubmitEdit: () -> Void = {}
+    var onCancelEdit: () -> Void = {}
+    var onToggleFeedbackRecording: () -> Void = {}
+    var onUndo: (Int) -> Void = { _ in }
 
     init(model: PopupModel) {
         self.model = model
@@ -46,11 +51,33 @@ final class PopupController {
 
     func hide() {
         if isVisible { Log.debug("Панель скрыта", .ui) }
+        panel?.allowsKey = false
         panel?.orderOut(nil)
     }
 
-    private func makePanel() -> NSPanel {
-        let panel = NSPanel(
+    /// Правка: панель принимает клавиатуру для поля замечаний. Приложение не активируется
+    /// (`.nonactivatingPanel`), приложение-цель остаётся активным.
+    func beginEditing() {
+        guard let panel else { return }
+        panel.allowsKey = true
+        panel.makeKeyAndOrderFront(nil)
+        Log.debug("Панель принимает клавиатуру (правка)", .ui)
+    }
+
+    /// Конец правки: клавиатура возвращается окну приложения-цели.
+    func endEditing() {
+        guard let panel, panel.allowsKey else { return }
+        panel.allowsKey = false
+        guard panel.isKeyWindow else { return }
+        // Панель не может перестать быть key сама: прячем и показываем снова,
+        // тогда клавиатура уходит к окну активного приложения.
+        panel.orderOut(nil)
+        panel.orderFrontRegardless()
+        Log.debug("Панель отдала клавиатуру", .ui)
+    }
+
+    private func makePanel() -> PopupPanel {
+        let panel = PopupPanel(
             contentRect: NSRect(x: 0, y: 0, width: model.width, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -70,7 +97,12 @@ final class PopupController {
         let view = PopupView(
             model: model,
             onSelect: { [weak self] key in self?.onSelect(key) },
-            onClose: { [weak self] in self?.onClose() }
+            onClose: { [weak self] in self?.onClose() },
+            onEdit: { [weak self] key in self?.onEdit(key) },
+            onSubmitEdit: { [weak self] in self?.onSubmitEdit() },
+            onCancelEdit: { [weak self] in self?.onCancelEdit() },
+            onToggleFeedbackRecording: { [weak self] in self?.onToggleFeedbackRecording() },
+            onUndo: { [weak self] key in self?.onUndo(key) }
         )
         let host = FirstMouseHostingView(rootView: view)
         panel.contentView = host
@@ -132,6 +164,13 @@ final class PopupController {
             isSettingFrame = false
         }
     }
+}
+
+/// Панель без рамки по умолчанию не становится key. Клавиатура нужна только полю правки.
+final class PopupPanel: NSPanel {
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
+    override var canBecomeMain: Bool { false }
 }
 
 /// Клик по строке срабатывает сразу, даже если панель не активна.

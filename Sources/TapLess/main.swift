@@ -96,12 +96,23 @@ MainActor.assumeIsolated {
     Log.includeText = config.log.includeText
     logConfigSummary(config)
 
+    let historyRoot = AppPaths.historyRoot(custom: config.history.dir)
+    let history = DictationHistoryUseCase(repository: FileHistoryRepository(root: historyRoot),
+                                          config: config.history)
+    Log.info("История: \(history.isEnabled ? "включена" : "выключена"), \(historyRoot.path), "
+             + "срок \(config.history.retentionDays) дн., предел \(config.history.maxSizeMB) МБ, "
+             + "аудио \(config.history.saveAudio ? "да" : "нет")", .config)
+
     let recognizer = WhisperSpeechRecognizer(settings: config.stt, modelsDirectory: paths.models)
-    let llm = RoutingLLMRepository(
-        process: ProcessLLMRepository(settings: config.llm,
-                                      runDirectory: paths.run,
-                                      defaultWorkdir: paths.llmWorkdir),
-        ollama: OllamaLLMRepository(settings: config.llm)
+    // Каждый вызов LLM в контексте диктовки (HistoryContext.session) попадает в историю.
+    let llm = HistoryLLMRepository(
+        base: RoutingLLMRepository(
+            process: ProcessLLMRepository(settings: config.llm,
+                                          runDirectory: paths.run,
+                                          defaultWorkdir: paths.llmWorkdir),
+            ollama: OllamaLLMRepository(settings: config.llm)
+        ),
+        history: history
     )
 
     let controller = AppController(AppDependencies(
@@ -112,6 +123,8 @@ MainActor.assumeIsolated {
         transcribe: TranscribeSpeechUseCase(recognizer: recognizer, config: config),
         format: FormatTextUseCase(llm: llm, config: config),
         prepareLocalLLM: PrepareLocalLLMUseCase(setup: OllamaSetup(), config: config),
+        history: history,
+        historyDirectory: historyRoot,
         modelsDirectory: paths.models,
         logFile: paths.logFile
     ))

@@ -15,6 +15,10 @@ struct AppDependencies {
     let transcribe: TranscribeSpeechUseCase
     let format: FormatTextUseCase
     let prepareLocalLLM: PrepareLocalLLMUseCase
+    /// История диктовок (`[history]`). Тот же экземпляр пишет вызовы LLM через `HistoryLLMRepository`.
+    let history: DictationHistoryUseCase
+    /// Папка истории: открывается из меню.
+    let historyDirectory: URL
     let modelsDirectory: URL
     let logFile: URL
 }
@@ -25,6 +29,8 @@ struct AppDependencies {
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State {
         case idle, recording, transcribing, results, message
+        /// Панель с результатами, одну строку правят: поле замечаний принимает клавиатуру.
+        case editing
     }
 
     private let config: AppConfig
@@ -34,8 +40,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let transcribe: TranscribeSpeechUseCase
     private let format: FormatTextUseCase
     private let prepareLocalLLM: PrepareLocalLLMUseCase
+    private let history: DictationHistoryUseCase
+    private let historyDirectory: URL
     private let modelsDirectory: URL
     private let logFile: URL
+    /// Чистка истории: одновременно идёт одна.
+    private var historyPruneTask: Task<Void, Never>?
 
     private let model = PopupModel()
     private lazy var popup = PopupController(model: model)
@@ -54,6 +64,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var jobs: [Task<Void, Never>] = []
     private var pendingCopyOnly = false
     private var hasResults = false
+    /// Правки строк по клавишам: новая правка той же строки отменяет прежнюю.
+    private var revisionJobs: [Int: Task<Void, Never>] = [:]
+    /// Распознавание замечания. Как и `transcribeTask`, живёт, пока Whisper занят.
+    private var feedbackTask: Task<Void, Never>?
+    private var feedbackTaskID: UUID?
+    private var feedbackAutoStopTask: Task<Void, Never>?
 
     private var autoStopTask: Task<Void, Never>?
     private var messageHideTask: Task<Void, Never>?
@@ -82,6 +98,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         transcribe = deps.transcribe
         format = deps.format
         prepareLocalLLM = deps.prepareLocalLLM
+        history = deps.history
+        historyDirectory = deps.historyDirectory
         modelsDirectory = deps.modelsDirectory
         logFile = deps.logFile
         super.init()
@@ -102,10 +120,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         popup.onSelect = { [weak self] key in self?.select(key, copyOnly: false) }
         popup.onClose = { [weak self] in self?.closePopup(reason: "крестик") }
+        popup.onEdit = { [weak self] key in self?.beginEdit(key) }
+        popup.onSubmitEdit = { [weak self] in self?.submitEdit() }
+        popup.onCancelEdit = { [weak self] in self?.cancelEdit(reason: "кнопка «Отмена»") }
+        popup.onToggleFeedbackRecording = { [weak self] in self?.toggleFeedbackRecording(trigger: "кнопка микрофона") }
+        popup.onUndo = { [weak self] key in self?.undoRevision(key) }
         recorder.onLevel = { [weak self] level in
             guard let self else { return }
             Task { @MainActor in
-                if self.state == .recording { self.model.pushLevel(level) }
+                if self.state == .recording || self.isRecordingFeedback { self.model.pushLevel(level) }
             }
         }
         recorder.onConfigurationChange = { [weak self] in
@@ -118,6 +141,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         requestPermissionsIfNeeded()
         loadModel()
         startLocalLLMSetup(reason: "запуск приложения")
+        pruneHistory(reason: "запуск приложения")
 
         if let configError {
             showAlert(title: "Ошибка в конфиге TapLess",
@@ -207,7 +231,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Показывает последний результат; если окно с результатами уже открыто — закрывает его.
     private func showLastHotKeyDown() {
         switch state {
-        case .results:
+        case .results, .editing:
             closePopup(reason: "клавиша \(showLastHotkeyDisplay)")
         case .recording, .transcribing:
             Log.debug("Клавиша показа результата нажата во время записи или распознавания — игнорирую", .hotkey)
@@ -229,7 +253,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             let pid = app?.processIdentifier
             MainActor.assumeIsolated {
-                guard let self, self.state == .results || self.state == .message else { return }
+                guard let self, self.state == .results || self.state == .message || self.state == .editing else { return }
                 if pid == ProcessInfo.processInfo.processIdentifier { return }
                 if let target = self.targetApp?.processIdentifier, pid == target { return }
                 self.closePopup(reason: "переключение на \(app?.bundleIdentifier ?? "другое приложение")")
@@ -245,28 +269,59 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             stopRecording(trigger: "горячая клавиша")
         case .transcribing:
             Log.debug("Клавиша записи нажата во время распознавания — игнорирую", .hotkey)
+        case .editing:
+            // В правке главная клавиша пишет замечание, а не новую диктовку.
+            toggleFeedbackRecording(trigger: "горячая клавиша")
         }
     }
 
     private func hotKeyUp() {
-        if config.general.isHoldMode, state == .recording {
+        guard config.general.isHoldMode else { return }
+        if state == .recording {
             stopRecording(trigger: "отпускание клавиши (hold)")
+        } else if isRecordingFeedback {
+            stopFeedbackRecording(trigger: "отпускание клавиши (hold)")
         }
     }
 
-    /// Esc + цифры (и ⇧+цифры), пока окно открыто.
+    private func escapePressed() {
+        guard state == .editing else {
+            closePopup(reason: "Esc")
+            return
+        }
+        switch model.feedbackPhase {
+        case .recording:
+            Log.info("\(tag(session)) Запись замечания отменена (Esc)", .audio)
+            feedbackAutoStopTask?.cancel()
+            _ = recorder.stop()
+            model.feedbackPhase = .idle
+            playSound("Funk")
+            updateStatusIcon()
+        case .transcribing, .polishing:
+            Log.info("\(tag(session)) Распознавание замечания отменено (Esc)", .stt)
+            feedbackTask?.cancel()
+            model.feedbackPhase = .idle
+        case .idle:
+            cancelEdit(reason: "Esc")
+        }
+    }
+
+    /// Esc + цифры (⇧+цифры — копировать, ⌥+цифры — править, ⌥⇧+цифры — откатить правку),
+    /// пока окно открыто.
+    /// В правке — только Esc: цифры набираются в поле замечаний.
     private func registerSessionKeys(withSelection: Bool) {
         unregisterSessionKeys()
         let center = HotKeyCenter.shared
 
         if let id = center.register(keyCode: UInt32(kVK_Escape), modifiers: 0,
-                                    onPress: { [weak self] in self?.closePopup(reason: "Esc") }) {
+                                    onPress: { [weak self] in self?.escapePressed() }) {
             sessionKeyIDs.append(id)
         }
         guard withSelection else { return }
 
         let keys = (model.rawKey.map { [$0] } ?? []) + format.variantKeys
         let shift = UInt32(shiftKey)
+        let option = UInt32(optionKey)
         for key in keys {
             for code in [HotKeyParser.digitKeyCodes[key], HotKeyParser.keypadKeyCodes[key]] {
                 if let id = center.register(keyCode: UInt32(code), modifiers: 0,
@@ -275,6 +330,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 if let id = center.register(keyCode: UInt32(code), modifiers: shift,
                                             onPress: { [weak self] in self?.select(key, copyOnly: true) }) {
+                    sessionKeyIDs.append(id)
+                }
+                if let id = center.register(keyCode: UInt32(code), modifiers: option,
+                                            onPress: { [weak self] in self?.beginEdit(key) }) {
+                    sessionKeyIDs.append(id)
+                }
+                if let id = center.register(keyCode: UInt32(code), modifiers: option | shift,
+                                            onPress: { [weak self] in self?.undoRevision(key) }) {
                     sessionKeyIDs.append(id)
                 }
             }
@@ -297,6 +360,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Прежнюю сессию не трогаем, пока запись не началась: если старт не удастся,
         // её варианты доработают и останутся в «Показать последний результат».
+        // Правку закрываем сразу: запись замечания делит с новой записью микрофон.
+        if state == .editing { cancelEdit(reason: "новая запись") }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             break
@@ -383,6 +448,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Сменилось устройство ввода: движок остановился сам. Перезапускаем его на новом
     /// устройстве, уже записанное сохраняется. Не вышло — распознаём то, что успели записать.
     private func audioConfigurationChanged() {
+        if isRecordingFeedback {
+            // Замечание короткое: не перезапускаем движок, а распознаём то, что успели записать.
+            Log.info("\(tag(session)) Изменилась конфигурация аудио во время записи замечания", .audio)
+            stopFeedbackRecording(trigger: "смена устройства")
+            return
+        }
         guard state == .recording, !audioRestartPending else { return }
         audioRestartPending = true
         let sid = session
@@ -420,6 +491,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case nil:
             break
         }
+        recordHistory(.recording(clip: clip, duration: clip.duration, targetApp: targetApp?.bundleIdentifier), session: sid)
 
         do {
             if !modelReady { model.note = "Whisper: \(modelStatusText)" }
@@ -434,7 +506,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Log.info("\(t) Распознавание завершено, но сессия сменилась — результат отброшен", .stt)
                 return
             }
-            Log.info(String(format: "%@ Распознавание завершено за %.2f с: %@", t, Date().timeIntervalSince(sttStarted), Log.text(text)), .stt)
+            let sttSeconds = Date().timeIntervalSince(sttStarted)
+            Log.info(String(format: "%@ Распознавание завершено за %.2f с: %@", t, sttSeconds, Log.text(text)), .stt)
+            recordHistory(.transcript(text: text, seconds: sttSeconds, model: config.stt.model), session: sid)
             guard !text.isEmpty else {
                 Log.info("\(t) Ничего не распознано", .stt)
                 showMessage("Ничего не распознано.", seconds: 3)
@@ -495,7 +569,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let job = Task { [weak self] in
             let result: Result<String, Error>
             do {
-                result = .success(try await format.execute(text: text, variantKey: key))
+                // Сессия в контексте задачи: по ней HistoryLLMRepository кладёт вызов в историю диктовки.
+                result = .success(try await HistoryContext.$session.withValue(sid) {
+                    try await format.execute(text: text, variantKey: key)
+                })
             } catch {
                 result = .failure(error)
             }
@@ -545,6 +622,342 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelJobs() {
         jobs.forEach { $0.cancel() }
         jobs.removeAll()
+        revisionJobs.removeAll()
+    }
+
+    // MARK: - Правка строки
+
+    private var isRecordingFeedback: Bool {
+        state == .editing && model.feedbackPhase == .recording
+    }
+
+    /// Текущий текст строки `key`, если она готова.
+    private func rowText(_ key: Int) -> String? {
+        if key == model.rawKey {
+            if case .done(let text) = model.rawStatus { return text }
+            return nil
+        }
+        return model.variants.first(where: { $0.id == key })?.text
+    }
+
+    /// ✎ или ⌥+цифра: поле замечаний под строкой `key`.
+    private func beginEdit(_ key: Int) {
+        guard state == .results else {
+            Log.debug("Правка \(key) недоступна в состоянии \(state)", .ui)
+            return
+        }
+        guard format.canRevise(key: key), rowText(key) != nil else {
+            Log.info("\(tag(session)) Правка \(key): строка не готова или её нет", .ui)
+            NSSound.beep()
+            return
+        }
+        Log.info("\(tag(session)) Правка строки \(key): поле замечаний открыто", .ui)
+        messageHideTask?.cancel()
+        model.pendingKey = nil
+        state = .editing
+        model.resetEditing()
+        model.editingKey = key
+        // Цифры снимаем: Carbon перехватил бы их раньше поля ввода.
+        registerSessionKeys(withSelection: false)
+        popup.beginEditing()
+        updateStatusIcon()
+    }
+
+    /// Закрывает поле замечаний: останавливает запись замечания, панель отдаёт клавиатуру.
+    private func leaveEditing() {
+        feedbackAutoStopTask?.cancel()
+        if model.feedbackPhase == .recording { _ = recorder.stop() }
+        feedbackTask?.cancel()
+        model.resetEditing()
+        popup.endEditing()
+    }
+
+    private func cancelEdit(reason: String) {
+        guard state == .editing else { return }
+        Log.info("\(tag(session)) Правка отменена: \(reason)", .ui)
+        leaveEditing()
+        state = .results
+        registerSessionKeys(withSelection: true)
+        updateStatusIcon()
+    }
+
+    private func submitEdit() {
+        guard state == .editing, let key = model.editingKey else { return }
+        let feedback = model.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard model.feedbackPhase == .idle, !feedback.isEmpty, let previous = rowText(key) else {
+            NSSound.beep()
+            return
+        }
+        let sid = session
+        Log.info("\(tag(sid)) Правка строки \(key): замечания \(Log.text(feedback))", .llm)
+        leaveEditing()
+        state = .results
+        registerSessionKeys(withSelection: true)
+        updateStatusIcon()
+
+        // Сохраняем строку как есть: если правка не удастся, вернём прежний текст.
+        let savedRaw = model.rawRevision
+        let savedVariant = model.variants.first(where: { $0.id == key })
+        if key == model.rawKey {
+            model.rawRevision = .running
+        } else {
+            setVariant(key, status: .running, seconds: nil)
+        }
+
+        revisionJobs[key]?.cancel()
+        let format = self.format
+        let transcript = model.rawText
+        let started = Date()
+        let job = Task { [weak self] in
+            let result: Result<String, Error>
+            do {
+                result = .success(try await HistoryContext.$session.withValue(sid) {
+                    try await format.revise(transcript: transcript, previous: previous, feedback: feedback, key: key)
+                })
+            } catch {
+                result = .failure(error)
+            }
+            guard let self, self.session == sid, !Task.isCancelled else { return }
+            self.revisionJobs[key] = nil
+            self.finishRevision(key: key, result: result, seconds: Date().timeIntervalSince(started), session: sid,
+                                savedRaw: savedRaw, savedVariant: savedVariant)
+        }
+        revisionJobs[key] = job
+        jobs.append(job)
+    }
+
+    private func finishRevision(key: Int, result: Result<String, Error>, seconds: Double, session sid: UUID,
+                                savedRaw: VariantState.Status?, savedVariant: VariantState?) {
+        switch result {
+        case .success(let text):
+            Log.info(String(format: "%@ Правка %ld готова за %.2f с: %@", tag(sid), key, seconds, Log.text(text)), .llm)
+            // Прежний текст — в историю строки: к нему можно откатиться (↶, ⌥⇧+цифра).
+            if key == model.rawKey {
+                if case .done(let previous) = savedRaw ?? .done(model.rawText) {
+                    model.rawHistory.append(previous)
+                }
+                model.rawRevision = .done(text)
+            } else if let savedVariant, let index = model.variants.firstIndex(where: { $0.id == key }) {
+                var row = savedVariant
+                if let previous = savedVariant.text {
+                    row.history.append(VariantState.Version(text: previous, seconds: savedVariant.seconds))
+                }
+                row.status = .done(text)
+                row.seconds = seconds
+                model.variants[index] = row
+            }
+        case .failure(let error):
+            if error is CancellationError { return }
+            Log.error(String(format: "%@ Правка %ld не удалась за %.2f с: %@", tag(sid), key, seconds, error.localizedDescription), .llm)
+            // Прежний текст важнее ошибки: возвращаем его, ошибку — в строку внизу.
+            if key == model.rawKey {
+                model.rawRevision = savedRaw
+            } else if let savedVariant, let index = model.variants.firstIndex(where: { $0.id == key }) {
+                model.variants[index] = savedVariant
+            }
+            model.note = "Правка \(key) не удалась: \(error.localizedDescription)"
+            if format.harnessKind(forRevisionKey: key) == .ollama {
+                startLocalLLMSetup(reason: "правка \(key) не удалась")
+            }
+            if model.pendingKey == key {
+                Log.info("\(tag(sid)) Отложенный выбор \(key) сброшен: правка не удалась", .ui)
+                model.pendingKey = nil
+                NSSound.beep()
+            }
+            return
+        }
+
+        guard model.pendingKey == key else { return }
+        Log.info("\(tag(sid)) Отложенный выбор \(key) исполняется (после правки)", .ui)
+        select(key, copyOnly: pendingCopyOnly)
+    }
+
+    /// Возвращает строке `key` текст до последней правки. Повторный откат — ещё на шаг назад,
+    /// до исходного текста.
+    private func undoRevision(_ key: Int) {
+        guard state == .results, rowText(key) != nil else {
+            Log.debug("Откат \(key) недоступен: состояние \(state) или строка не готова", .ui)
+            return
+        }
+        if key == model.rawKey {
+            guard let previous = model.rawHistory.popLast() else {
+                NSSound.beep()
+                return
+            }
+            // История пуста — вернулись к исходной расшифровке.
+            model.rawRevision = model.rawHistory.isEmpty ? nil : .done(previous)
+        } else {
+            guard let index = model.variants.firstIndex(where: { $0.id == key }),
+                  let previous = model.variants[index].history.popLast() else {
+                NSSound.beep()
+                return
+            }
+            model.variants[index].status = .done(previous.text)
+            model.variants[index].seconds = previous.seconds
+        }
+        Log.info("\(tag(session)) Откат правки строки \(key)", .ui)
+    }
+
+    // MARK: - Запись замечания
+
+    private func toggleFeedbackRecording(trigger: String) {
+        guard state == .editing else { return }
+        switch model.feedbackPhase {
+        case .idle:
+            startFeedbackRecording(trigger: trigger)
+        case .recording:
+            stopFeedbackRecording(trigger: trigger)
+        case .transcribing, .polishing:
+            Log.debug("Запись замечания: идёт распознавание — игнорирую", .audio)
+        }
+    }
+
+    private func startFeedbackRecording(trigger: String) {
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        Log.info("\(tag(session)) Старт записи замечания: источник=\(trigger), микрофон=\(authStatusName(micStatus))", .audio)
+        guard micStatus == .authorized else {
+            if micStatus == .notDetermined { AVCaptureDevice.requestAccess(for: .audio) { _ in } }
+            model.note = "Нет доступа к микрофону — замечания можно ввести руками."
+            NSSound.beep()
+            return
+        }
+        do {
+            try recorder.start()
+        } catch {
+            Log.error("Не удалось начать запись замечания: \(error)", .audio)
+            model.note = "Не удалось начать запись: \(error.localizedDescription)"
+            return
+        }
+        recordingStartedAt = Date()
+        model.levels = Array(repeating: 0, count: model.levels.count)
+        model.feedbackPhase = .recording
+        if !modelReady { model.note = "Whisper: \(modelStatusText)" }
+        playSound("Tink")
+        updateStatusIcon()
+
+        let limit = max(5, config.general.maxRecordingSeconds)
+        let sid = session
+        let key = model.editingKey
+        feedbackAutoStopTask?.cancel()
+        feedbackAutoStopTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(limit) * 1_000_000_000)
+            guard let self, !Task.isCancelled, self.session == sid, self.model.editingKey == key,
+                  self.isRecordingFeedback else { return }
+            self.stopFeedbackRecording(trigger: "автостоп по лимиту")
+        }
+    }
+
+    private func stopFeedbackRecording(trigger: String) {
+        guard isRecordingFeedback, let key = model.editingKey else { return }
+        let recorded = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        Log.info(String(format: "%@ Стоп записи замечания: источник=%@, записано %.2f с", tag(session), trigger, recorded), .audio)
+        feedbackAutoStopTask?.cancel()
+        model.feedbackPhase = .transcribing
+        playSound("Pop")
+        updateStatusIcon()
+
+        let sid = session
+        let tail = max(0, config.general.tailMs)
+        let taskID = UUID()
+        feedbackTaskID = taskID
+        feedbackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(tail) * 1_000_000)
+            guard let self else { return }
+            await self.finishFeedbackRecording(sid, key: key)
+            if self.feedbackTaskID == taskID {
+                self.feedbackTask = nil
+                self.feedbackTaskID = nil
+            }
+        }
+    }
+
+    /// Правка той же строки ещё открыта и задачу не отменили.
+    private func isStillEditing(_ sid: UUID, key: Int) -> Bool {
+        !Task.isCancelled && session == sid && state == .editing && model.editingKey == key
+    }
+
+    private func finishFeedbackRecording(_ sid: UUID, key: Int) async {
+        // Правку закрыли во время хвоста — запись уже остановлена, микрофон, возможно, пишет новую диктовку.
+        guard isStillEditing(sid, key: key) else { return }
+        let clip = recorder.stop()
+        let t = tag(sid)
+        Log.info(String(format: "%@ Замечание записано: %.2f с, пик RMS %.4f", t, clip.duration, clip.peakLevel), .audio)
+
+        switch transcribe.rejection(for: clip) {
+        case .tooShort:
+            model.feedbackPhase = .idle
+            return
+        case .silence:
+            model.feedbackPhase = .idle
+            model.note = "Тишина — замечание не записано."
+            return
+        case nil:
+            break
+        }
+        recordHistory(.feedbackRecording(clip: clip, duration: clip.duration, key: key), session: sid)
+
+        do {
+            try await ensureModelLoaded()
+            guard isStillEditing(sid, key: key) else { return }
+            let sttStarted = Date()
+            let text = try await transcribe.execute(clip)
+            let sttSeconds = Date().timeIntervalSince(sttStarted)
+            guard isStillEditing(sid, key: key) else {
+                Log.info("\(t) Замечание распознано, но правку закрыли — результат отброшен", .stt)
+                return
+            }
+            Log.info("\(t) Замечание распознано: \(Log.text(text))", .stt)
+            recordHistory(.feedbackTranscript(text: text, seconds: sttSeconds, model: config.stt.model, key: key),
+                          session: sid)
+            if model.note?.hasPrefix("Whisper:") == true { model.note = nil }
+            guard !text.isEmpty else {
+                model.feedbackPhase = .idle
+                model.note = "Ничего не распознано."
+                return
+            }
+            let cleaned = await cleanFeedback(text, session: sid, key: key)
+            guard isStillEditing(sid, key: key) else { return }
+            model.feedbackPhase = .idle
+            let current = model.feedback
+            if current.isEmpty || current.last?.isWhitespace == true {
+                model.feedback = current + cleaned
+            } else {
+                model.feedback = current + " " + cleaned
+            }
+        } catch {
+            guard isStillEditing(sid, key: key), !(error is CancellationError) else {
+                Log.info("\(t) Распознавание замечания отменено", .stt)
+                return
+            }
+            Log.error("\(t) Распознавание замечания: \(error)", .stt)
+            model.feedbackPhase = .idle
+            model.note = "Ошибка распознавания: \(error.localizedDescription)"
+        }
+    }
+
+    /// Прогоняет надиктованное замечание через LLM (`llm.feedback_prompt`): Whisper путает термины.
+    /// Если LLM не ответила, возвращает текст как распознан — замечание важнее чистки.
+    private func cleanFeedback(_ text: String, session sid: UUID, key: Int) async -> String {
+        guard format.cleansFeedback else { return text }
+        model.feedbackPhase = .polishing
+        let t = tag(sid)
+        let started = Date()
+        do {
+            let format = self.format
+            let cleaned = try await HistoryContext.$session.withValue(sid) {
+                try await format.cleanFeedback(text)
+            }
+            Log.info(String(format: "%@ Замечание исправлено за %.2f с: %@", t, Date().timeIntervalSince(started), Log.text(cleaned)), .llm)
+            return cleaned
+        } catch {
+            guard isStillEditing(sid, key: key), !(error is CancellationError) else { return text }
+            Log.error(String(format: "%@ Чистка замечания не удалась за %.2f с: %@", t, Date().timeIntervalSince(started), error.localizedDescription), .llm)
+            model.note = "Замечание вставлено как распознано: ИИ не ответил (\(error.localizedDescription))."
+            if format.feedbackHarnessKind == .ollama {
+                startLocalLLMSetup(reason: "чистка замечания не удалась")
+            }
+            return text
+        }
     }
 
     // MARK: - Выбор и вставка
@@ -555,7 +968,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         var text: String?
         if key == model.rawKey {
-            text = model.rawText.isEmpty ? nil : model.rawText
+            switch model.rawStatus {
+            case .done(let t): text = t
+            case .running: text = nil
+            case .failed:
+                NSSound.beep()
+                return
+            }
         } else {
             guard let variant = model.variants.first(where: { $0.id == key }) else {
                 Log.warning("\(tag(session)) Выбор \(key): такого варианта нет", .ui)
@@ -579,12 +998,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pendingCopyOnly = copyOnly
             return
         }
-        deliver(text, copyOnly: copyOnly)
+        deliver(text, key: key, copyOnly: copyOnly)
     }
 
-    private func deliver(_ text: String, copyOnly: Bool) {
+    private func deliver(_ text: String, key: Int, copyOnly: Bool) {
         let t = tag(session)
         Log.info("\(t) Доставка: \(Log.text(text)), copyOnly=\(copyOnly)", .paste)
+        recordHistory(.delivered(key: key, text: text, copyOnly: copyOnly), session: session)
         model.pendingKey = nil
         unregisterSessionKeys()
         popup.hide()
@@ -607,6 +1027,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                  seconds: 6)
                 Paster.requestAccessibility()
             }
+            // После вставки, а не до: чистка не должна задерживать ⌘V.
+            self.pruneHistory(reason: "после вставки")
+        }
+    }
+
+    // MARK: - История
+
+    /// Пишет событие в историю в фоне. Время берётся сейчас: фоновые задачи могут выполниться не по порядку.
+    private func recordHistory(_ event: HistoryEvent, session sid: UUID) {
+        guard history.isEnabled else { return }
+        let history = self.history
+        let date = Date()
+        Task.detached(priority: .utility) {
+            await history.record(event, session: sid, at: date)
+        }
+    }
+
+    /// Удаляет историю старше `history.retention_days` и сверх `history.max_size_mb`.
+    private func pruneHistory(reason: String) {
+        guard historyPruneTask == nil else { return }
+        let history = self.history
+        historyPruneTask = Task { [weak self] in
+            let result = await Task.detached(priority: .utility) { await history.prune() }.value
+            if result.removedSessions > 0 || result.removedPrompts > 0 {
+                Log.info("История очищена (\(reason)): диктовок \(result.removedSessions), промптов \(result.removedPrompts), "
+                         + "освобождено \(ByteCountFormatter.string(fromByteCount: result.freedBytes, countStyle: .file))", .app)
+            }
+            self?.historyPruneTask = nil
         }
     }
 
@@ -619,6 +1067,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             autoStopTask?.cancel()
             _ = recorder.stop()
         }
+        if state == .editing { leaveEditing() }
         unregisterSessionKeys()
         state = .message
         model.pendingKey = nil
@@ -649,6 +1098,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             session = UUID()
             transcribeTask?.cancel()
             cancelJobs()
+        case .editing:
+            // Правки, которые уже ушли в LLM, доработают: их видно в «Показать последний результат».
+            leaveEditing()
         case .idle, .results, .message:
             break
         }
@@ -661,7 +1113,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func showLastResult() {
-        guard hasResults, state != .recording, state != .transcribing else { return }
+        guard hasResults, state != .recording, state != .transcribing, state != .editing else { return }
         Log.info("\(tag(session)) Показ последнего результата", .ui)
         messageHideTask?.cancel()
         let front = NSWorkspace.shared.frontmostApplication
@@ -762,7 +1214,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let keys = format.warmUpKeys
         guard !keys.isEmpty, warmUpTask == nil else { return }
         // Пока идут варианты, прогрев только отнимет у них время.
-        if state == .transcribing || (state == .results && model.variants.contains { $0.status == .running }) {
+        let rowsRunning = model.variants.contains { $0.status == .running } || model.rawRevision == .running
+        if state == .transcribing || ((state == .results || state == .editing) && rowsRunning) {
             Log.debug("Прогрев Ollama пропущен: идёт диктовка", .llm)
             return
         }
@@ -805,7 +1258,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Строка о состоянии Ollama внизу панели, пока она открыта с вариантами.
     private func updateLocalLLMNote() {
-        guard state == .results else { return }
+        guard state == .results || state == .editing else { return }
         if localLLMStatus == .ready {
             if model.note?.hasPrefix("Ollama:") == true { model.note = nil }
         } else {
@@ -862,6 +1315,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var tint: NSColor?
         switch state {
         case .recording:
+            symbol = "mic.fill"
+            tint = .systemRed
+        case .editing where model.feedbackPhase == .recording:
             symbol = "mic.fill"
             tint = .systemRed
         case .transcribing:
@@ -925,13 +1381,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                enabled: state != .transcribing)
         action(showLastHotkeyDisplay.isEmpty ? "Показать последний результат" : "Показать последний результат (\(showLastHotkeyDisplay))",
                #selector(showLastResultAction),
-               enabled: hasResults && state != .recording && state != .transcribing)
+               enabled: hasResults && state != .recording && state != .transcribing && state != .editing)
         menu.addItem(.separator())
 
         action("Открыть конфиг…", #selector(openConfigAction))
         action("Перезапустить (применить конфиг)", #selector(restartAction))
         action("Перезагрузить модель", #selector(reloadModelAction), enabled: canReloadModel)
         action("Папка с моделями", #selector(openModelsFolderAction))
+        action("Папка истории", #selector(openHistoryFolderAction))
         action("Открыть лог", #selector(openLogAction))
         menu.addItem(.separator())
 
@@ -995,7 +1452,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Модель нельзя выгружать, пока она загружается или Whisper ещё распознаёт
     /// (в том числе отменённую по Esc запись).
     private var canReloadModel: Bool {
-        state != .transcribing && transcribeTask == nil && (modelReady || modelLoadError != nil)
+        state != .transcribing && transcribeTask == nil && feedbackTask == nil && (modelReady || modelLoadError != nil)
     }
 
     @objc private func reloadModelAction() {
@@ -1007,6 +1464,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openModelsFolderAction() {
         Log.info("Меню: Папка с моделями", .app)
         NSWorkspace.shared.open(modelsDirectory)
+    }
+
+    @objc private func openHistoryFolderAction() {
+        Log.info("Меню: Папка истории (\(historyDirectory.path))", .app)
+        try? FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(historyDirectory)
     }
 
     @objc private func openLogAction() {

@@ -10,10 +10,18 @@ struct VariantState: Identifiable, Equatable {
         case failed(String)
     }
 
+    /// Прежняя версия строки: к ней можно откатиться после правки.
+    struct Version: Equatable {
+        let text: String
+        let seconds: Double?
+    }
+
     let id: Int          // клавиша варианта: 1…9
     var name: String
     var status: Status
     var seconds: Double?
+    /// Версии до правок, от исходной к последней. Пусто — строку не правили.
+    var history: [Version] = []
 
     var text: String? {
         if case .done(let t) = status { return t }
@@ -31,6 +39,15 @@ final class PopupModel: ObservableObject {
         case message(String)
     }
 
+    /// Запись замечания в режиме правки.
+    enum FeedbackPhase: Equatable {
+        case idle
+        case recording
+        case transcribing
+        /// ИИ исправляет надиктованное замечание (`llm.feedback_prompt`).
+        case polishing
+    }
+
     @Published var phase: Phase = .hidden
     @Published var recordStart = Date()
     @Published var levels: [Float] = Array(repeating: 0, count: 32)
@@ -41,6 +58,17 @@ final class PopupModel: ObservableObject {
     @Published var targetIcon: NSImage?
     @Published var note: String?            // строка-подсказка внизу (статус модели, ошибки)
     @Published var hotkeyDisplay = ""
+
+    /// Правка: клавиша строки, которую правят; nil — режима правки нет.
+    @Published var editingKey: Int?
+    /// Замечания автора в поле правки.
+    @Published var feedback = ""
+    @Published var feedbackPhase: FeedbackPhase = .idle
+    /// Правка сырого текста. nil — показывается `rawText` как есть; `rawText` остаётся
+    /// исходной расшифровкой и уходит в правки как `{text}`.
+    @Published var rawRevision: VariantState.Status?
+    /// Тексты сырой строки до правок, от исходной расшифровки к последней.
+    @Published var rawHistory: [String] = []
 
     /// Клавиша строки «Как распознано» (сырой текст); nil — строки нет.
     var rawKey: Int? = 1
@@ -63,5 +91,20 @@ final class PopupModel: ObservableObject {
         variants = []
         pendingKey = nil
         note = nil
+        rawRevision = nil
+        rawHistory = []
+        resetEditing()
+    }
+
+    func resetEditing() {
+        editingKey = nil
+        feedback = ""
+        feedbackPhase = .idle
+    }
+
+    /// Статус строки сырого текста с учётом правки.
+    var rawStatus: VariantState.Status {
+        if let rawRevision { return rawRevision }
+        return rawText.isEmpty ? .running : .done(rawText)
     }
 }

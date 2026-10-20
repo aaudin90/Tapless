@@ -104,11 +104,18 @@ public struct LLMConfig: Sendable, Equatable {
     public var inputTemplate: String
     public var stripCodeFences: Bool
     public var basePrompt: String
+    /// Дописывается в конец системного промпта при правке строки панели (после промпта варианта).
+    public var revisePrompt: String
+    /// Входной текст при правке: `{text}` — расшифровка, `{previous}` — прежний результат,
+    /// `{feedback}` — замечания автора.
+    public var reviseTemplate: String
+    /// Задача для чистки надиктованных замечаний при правке строки (после base_prompt). Пусто — без чистки.
+    public var feedbackPrompt: String
     public var env: [String: String]
 
     public init(harness: String, model: String, timeoutSeconds: Double, shell: String, loginShell: Bool,
                 extraPath: [String], workdir: String, inputTemplate: String, stripCodeFences: Bool,
-                basePrompt: String, env: [String: String]) {
+                basePrompt: String, revisePrompt: String, reviseTemplate: String, feedbackPrompt: String, env: [String: String]) {
         self.harness = harness
         self.model = model
         self.timeoutSeconds = timeoutSeconds
@@ -119,6 +126,9 @@ public struct LLMConfig: Sendable, Equatable {
         self.inputTemplate = inputTemplate
         self.stripCodeFences = stripCodeFences
         self.basePrompt = basePrompt
+        self.revisePrompt = revisePrompt
+        self.reviseTemplate = reviseTemplate
+        self.feedbackPrompt = feedbackPrompt
         self.env = env
     }
 }
@@ -260,6 +270,26 @@ public struct LogConfig: Sendable, Equatable {
     public var logLevel: LogLevel { LogLevel(name: level) ?? .debug }
 }
 
+/// История диктовок на диске. Секция `[history]`.
+public struct HistoryConfig: Sendable, Equatable {
+    public var enabled: Bool
+    /// Папка истории. Пусто — `~/.cache/tapless`.
+    public var dir: String
+    public var saveAudio: Bool
+    /// 0 — без срока.
+    public var retentionDays: Int
+    /// 0 — без предела.
+    public var maxSizeMB: Int
+
+    public init(enabled: Bool, dir: String, saveAudio: Bool, retentionDays: Int, maxSizeMB: Int) {
+        self.enabled = enabled
+        self.dir = dir
+        self.saveAudio = saveAudio
+        self.retentionDays = retentionDays
+        self.maxSizeMB = maxSizeMB
+    }
+}
+
 /// Словарь для модели: термин → как он может прийти из распознавания, плюс свободные пояснения.
 public struct DictionaryConfig: Sendable, Equatable {
     public var terms: [String: [String]]
@@ -302,11 +332,12 @@ public struct AppConfig: Sendable, Equatable {
     public var schemas: [String: SchemaConfig]
     public var log: LogConfig
     public var dictionary: DictionaryConfig
+    public var history: HistoryConfig
     public var variants: [VariantConfig]
 
     public init(general: GeneralConfig, paste: PasteConfig, ui: UIConfig, stt: STTConfig,
                 llm: LLMConfig, harnesses: [String: HarnessConfig], schemas: [String: SchemaConfig],
-                log: LogConfig, dictionary: DictionaryConfig, variants: [VariantConfig]) {
+                log: LogConfig, dictionary: DictionaryConfig, history: HistoryConfig, variants: [VariantConfig]) {
         self.general = general
         self.paste = paste
         self.ui = ui
@@ -316,6 +347,7 @@ public struct AppConfig: Sendable, Equatable {
         self.schemas = schemas
         self.log = log
         self.dictionary = dictionary
+        self.history = history
         self.variants = variants
     }
 

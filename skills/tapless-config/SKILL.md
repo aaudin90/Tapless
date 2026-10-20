@@ -32,6 +32,7 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 | Лог | `~/Library/Logs/TapLess/TapLess.log` |
 | Промпты последнего запуска вариантов | `~/Library/Application Support/TapLess/run/prompt-<клавиша>.txt` |
 | Модели Whisper | `~/Library/Application Support/TapLess/models` |
+| История диктовок (`[history]`) | `~/.cache/tapless/history/<дата>/<время>_<сессия>/`: `session.json`, `audio.wav`, `transcript.txt`, `llm/*.txt`; системные промпты — `~/.cache/tapless/prompts/<id>.txt` |
 
 Версия приложения: `defaults read ~/Applications/TapLess.app/Contents/Info CFBundleShortVersionString`. Этот документ описывает TapLess 0.2.0 и новее.
 
@@ -79,6 +80,8 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 
 ### `[ui]` — панель
 
+Клавиши панели: цифра — вставить строку, `⇧`+цифра — только скопировать, `⌥`+цифра — править строку (замечания можно надиктовать главной клавишей; LLM переделает текст по `llm.revise_template` и `llm.revise_prompt`; надиктованные замечания перед вставкой в поле чистит LLM по `llm.feedback_prompt`, `""` — выключить чистку), `⌥⇧`+цифра — откатить последнюю правку строки (повторно — ещё на шаг, до исходного текста), `Esc` — закрыть.
+
 | Ключ | Что делает |
 |---|---|
 | `position` | `"top"` или `"center"`. |
@@ -111,6 +114,9 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 | `input_template` | Как подать текст модели; `{text}` — расшифровка. |
 | `strip_code_fences` | Снимать обёртку ```` ``` ```` с ответа. |
 | `base_prompt` | Общий системный промпт. `{dictionary}` — место словаря. Промпт варианта дописывается в конец. |
+| `revise_template` | Входной текст при правке строки панели: `{text}` — расшифровка, `{previous}` — прежний результат, `{feedback}` — замечания автора. |
+| `revise_prompt` | Дописывается в конец системного промпта при правке, после промпта варианта. |
+| `feedback_prompt` | Задача для чистки надиктованных замечаний при правке: после Whisper замечание проходит через LLM (harness `llm.harness`) и попадает в поле. Системный промпт = `base_prompt` + это; вход — `input_template`. Пустая строка — без чистки. |
 | `[llm.env]` | Переменные окружения для всех harness (свободные ключи). |
 
 ### `[harness.<имя>]` — чем оформлять текст
@@ -148,6 +154,26 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 ### `[log]`
 
 `level` — `"debug"`, `"info"`, `"warning"`, `"error"`. `include_text` — писать в лог текст диктовок и ответов (см. правило 7).
+
+### `[history]` — история диктовок (TapLess 0.4.0+)
+
+Каждая диктовка — папка `<dir>/history/<гггг-мм-дд>/<чч-мм-сс>_<первые 8 символов сессии>/`:
+
+- `session.json` — всё структурно: время, приложение-цель, расшифровка, каждый вызов LLM (`purpose`: `variant`, `revision`, `feedback`; клавиша, harness, модель, `prompt_id`, вход, ответ или ошибка, время), выбранная строка (`deliveries`);
+- `audio.wav` — запись, `transcript.txt` — расшифровка Whisper;
+- `feedback-<N>.wav` / `.txt` — надиктованные замечания к правке;
+- `llm/<NN>-<purpose><клавиша>-<модель>-<prompt_id>.txt` — ответ LLM;
+- системные промпты лежат отдельно, без повторов: `<dir>/prompts/<prompt_id>.txt`.
+
+| Ключ | Что делает |
+|---|---|
+| `enabled` | `true` — сохранять. `false` — не сохранять; старое всё равно удаляется по сроку |
+| `dir` | Папка; пусто — `~/.cache/tapless` |
+| `save_audio` | Сохранять WAV (16 кГц mono, ~1,9 МБ на минуту речи) |
+| `retention_days` | Срок хранения в днях; `0` — без срока |
+| `max_size_mb` | Предел размера `history/`; при превышении удаляются самые старые диктовки, кроме последней. `0` — без предела |
+
+Чистка — при запуске и после каждой вставки. История хранится в открытом виде: в ней текст диктовок, как в логе с `include_text`.
 
 ### `[variants.<номер>]` — варианты оформления
 
@@ -236,7 +262,7 @@ notes = """
    | Claude Code | `~/.claude/history.jsonl` (поле `display`, есть `project`); полные сессии — `~/.claude/projects/<проект>/*.jsonl`, строки с `"type":"user"`, текст — `message.content`, если это строка |
    | Codex | `~/.codex/history.jsonl` (поле `text`); сессии — `~/.codex/sessions/<год>/<месяц>/<день>/rollout-*.jsonl`; диктовка приложения Codex — `~/.codex/transcription-history.jsonl` |
    | OpenCode | `~/.local/share/opencode/` (`storage/`, `opencode.db` — SQLite) |
-   | TapLess | лог `~/Library/Logs/TapLess/TapLess.log`, строки «Распознавание завершено …», только если включён `log.include_text` (правило 7) |
+   | TapLess | история `~/.cache/tapless/history/*/*/session.json`: `stt.text` (как распознал Whisper) рядом с `deliveries[].text` (что пользователь вставил) — лучший источник пар «ошибка → термин»; иначе лог `~/Library/Logs/TapLess/TapLess.log`, строки «Распознавание завершено …», только если включён `log.include_text` (правило 7) |
 
    Выборка последних 500 сообщений Claude Code, без слэш-команд и вставок, по одному сообщению на строку:
 

@@ -44,6 +44,17 @@ extension AppConfig {
             warnings.append("log.level = \"\(log.level)\": ожидается \"debug\", \"info\", \"warning\" или \"error\" — используется \"debug\".")
         }
 
+        if history.retentionDays < 0 {
+            warnings.append("history.retention_days = \(history.retentionDays): ожидается 0 (без срока) или больше — срок не применяется.")
+        }
+        if history.maxSizeMB < 0 {
+            warnings.append("history.max_size_mb = \(history.maxSizeMB): ожидается 0 (без предела) или больше — предел не применяется.")
+        }
+
+        for placeholder in ["{previous}", "{feedback}"] where !llm.reviseTemplate.contains(placeholder) {
+            warnings.append("llm.revise_template без \(placeholder): правка строки панели потеряет \(placeholder == "{feedback}" ? "замечания автора" : "прежний результат").")
+        }
+
         warnings += harnessWarnings
         return warnings
     }
