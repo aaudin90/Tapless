@@ -1124,6 +1124,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.targetIcon = targetApp?.icon
         state = .results
         model.pendingKey = nil
+        model.expandedKey = nil
         model.phase = .results
         registerSessionKeys(withSelection: true)
         popup.show()

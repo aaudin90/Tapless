@@ -29,6 +29,14 @@ struct VariantState: Identifiable, Equatable {
     }
 }
 
+/// Высота текста строки: целиком и в пределах `maxLines`.
+struct TextHeights: Equatable {
+    let full: CGFloat
+    let limited: CGFloat
+
+    var isTruncated: Bool { full > limited + 0.5 }
+}
+
 @MainActor
 final class PopupModel: ObservableObject {
     enum Phase: Equatable {
@@ -70,6 +78,13 @@ final class PopupModel: ObservableObject {
     /// Тексты сырой строки до правок, от исходной расшифровки к последней.
     @Published var rawHistory: [String] = []
 
+    /// Строка, развёрнутая целиком; nil — все строки обрезаны до `maxLines`.
+    @Published var expandedKey: Int?
+    /// Высоты текста готовых строк по клавише: от них зависит кнопка разворота.
+    @Published private(set) var textHeights: [Int: TextHeights] = [:]
+    /// Предел высоты развёрнутого текста; длиннее — прокрутка внутри строки.
+    @Published var expandedMaxHeight: CGFloat = 400
+
     /// Клавиша строки «Как распознано» (сырой текст); nil — строки нет.
     var rawKey: Int? = 1
     var maxLines = 7
@@ -93,7 +108,18 @@ final class PopupModel: ObservableObject {
         note = nil
         rawRevision = nil
         rawHistory = []
+        expandedKey = nil
         resetEditing()
+    }
+
+    /// Пишет только при изменении: `@Published` перерисовывает и на то же значение.
+    func setTextHeights(_ heights: [Int: TextHeights]) {
+        if textHeights != heights { textHeights = heights }
+    }
+
+    /// Текст строки не влез в `maxLines`.
+    func isTruncated(_ key: Int) -> Bool {
+        textHeights[key]?.isTruncated ?? false
     }
 
     func resetEditing() {

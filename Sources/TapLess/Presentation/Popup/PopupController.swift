@@ -134,6 +134,9 @@ final class PopupController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         guard let frame = screen?.visibleFrame else { return }
+        // Развёрнутый текст длиннее — прокрутка внутри строки, иначе панель не влезет в экран.
+        let expandedMaxHeight = max(160, (frame.height * 0.45).rounded())
+        if model.expandedMaxHeight != expandedMaxHeight { model.expandedMaxHeight = expandedMaxHeight }
         anchorMidX = frame.midX
         if position.lowercased() == "center" {
             anchorTop = frame.midY + frame.height * 0.2
@@ -154,8 +157,14 @@ final class PopupController {
         // Не даём окну уйти за нижний край экрана, если вариантов много и они длинные.
         let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchorMidX, y: anchorTop - 1)) }
             ?? NSScreen.main
-        if let visible = screen?.visibleFrame, frame.minY < visible.minY + 8 {
-            frame.origin.y = visible.minY + 8
+        if let visible = screen?.visibleFrame {
+            if frame.minY < visible.minY + 8 {
+                frame.origin.y = visible.minY + 8
+            }
+            // Панель выше экрана (развёрнутая строка): верх с заголовком важнее низа.
+            if frame.maxY > visible.maxY - 8 {
+                frame.origin.y = visible.maxY - 8 - frame.height
+            }
         }
 
         if frame != panel.frame {

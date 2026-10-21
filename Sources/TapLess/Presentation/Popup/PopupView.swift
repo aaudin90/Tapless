@@ -47,6 +47,9 @@ struct PopupView: View {
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
         )
         .environment(\.colorScheme, .dark)
+        .onPreferenceChange(TextHeightsKey.self) { [model] heights in
+            MainActor.assumeIsolated { model.setTextHeights(heights) }
+        }
     }
 
     /// Строка варианта, кнопка правки справа и поле замечаний под строкой, если её правят.
@@ -54,6 +57,7 @@ struct PopupView: View {
     private func row(key: Int, name: String, status: VariantState.Status, seconds: Double?,
                      revisions: Int, isRaw: Bool) -> some View {
         let isEditing = model.editingKey == key
+        let isExpanded = model.expandedKey == key
         HStack(alignment: .top, spacing: 6) {
             Button { onSelect(key) } label: {
                 VariantRow(key: key,
@@ -62,7 +66,10 @@ struct PopupView: View {
                            seconds: seconds,
                            isPending: model.pendingKey == key,
                            isRaw: isRaw,
-                           maxLines: model.maxLines)
+                           maxLines: model.maxLines,
+                           isExpanded: isExpanded,
+                           fullHeight: model.textHeights[key]?.full,
+                           expandedMaxHeight: model.expandedMaxHeight)
             }
             .buttonStyle(VariantRowButtonStyle())
 
@@ -84,6 +91,15 @@ struct PopupView: View {
                         .buttonStyle(.plain)
                         .disabled(!canAct)
                         .help("Вернуть текст до правки (⌥⇧\(key))")
+                    }
+
+                    if status.isDone && (isExpanded || model.isTruncated(key)) {
+                        Button { model.expandedKey = isExpanded ? nil : key } label: {
+                            RowIcon(symbol: isExpanded ? "chevron.up" : "chevron.down",
+                                    isEnabled: true, isActive: isExpanded)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isExpanded ? "Свернуть текст" : "Показать текст целиком")
                     }
                 }
                 .padding(.top, 6)
@@ -435,6 +451,10 @@ private struct VariantRow: View {
     let isPending: Bool
     let isRaw: Bool
     let maxLines: Int
+    let isExpanded: Bool
+    /// Замеренная высота текста целиком; nil — ещё не замерена.
+    let fullHeight: CGFloat?
+    let expandedMaxHeight: CGFloat
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -515,13 +535,28 @@ private struct VariantRow: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.tertiary)
         case .done(let text):
-            Text(text)
+            let styled = Text(text)
                 .font(.system(size: isRaw ? 12.5 : 13.5))
                 .foregroundStyle(isRaw ? Color.white.opacity(0.65) : Color.white.opacity(0.95))
-                .lineLimit(maxLines)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if !isExpanded {
+                    styled
+                        .lineLimit(maxLines)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let fullHeight, fullHeight > expandedMaxHeight {
+                    ScrollView(.vertical) {
+                        styled
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: expandedMaxHeight)
+                } else {
+                    styled.fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(TextHeightsProbe(key: key, text: styled, maxLines: maxLines))
         case .failed(let message):
             Text(message)
                 .font(.system(size: 12))
@@ -530,6 +565,45 @@ private struct VariantRow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// Высоты текста готовых строк по клавише; собирает их `PopupView` в модель.
+private struct TextHeightsKey: PreferenceKey {
+    static let defaultValue: [Int: TextHeights] = [:]
+
+    static func reduce(value: inout [Int: TextHeights], nextValue: () -> [Int: TextHeights]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// Невидимые копии текста строки шириной с саму строку: целиком и в пределах `maxLines`.
+/// По ним видно, обрезан ли текст и какой высоты он будет развёрнутым.
+private struct TextHeightsProbe: View {
+    let key: Int
+    let text: Text
+    let maxLines: Int
+
+    var body: some View {
+        GeometryReader { proxy in
+            text
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: proxy.size.width, alignment: .topLeading)
+                .background(GeometryReader { full in
+                    text
+                        .lineLimit(maxLines)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: full.size.width, alignment: .topLeading)
+                        .background(GeometryReader { limited in
+                            Color.clear.preference(
+                                key: TextHeightsKey.self,
+                                value: [key: TextHeights(full: full.size.height, limited: limited.size.height)])
+                        })
+                })
+                .hidden()
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
