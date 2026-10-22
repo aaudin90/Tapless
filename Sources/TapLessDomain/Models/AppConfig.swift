@@ -155,6 +155,17 @@ public enum HarnessKind: String, Sendable, Equatable, CaseIterable {
     case process
     /// HTTP-запрос к серверу Ollama (`/api/chat`) по адресу `url`, без CLI.
     case ollama
+    /// Codex CLI: запуск как у `process`, но с отдельной папкой `CODEX_HOME`, без `AGENTS.md`,
+    /// MCP-серверов и прочих настроек пользователя.
+    case codex
+}
+
+/// Что делать, если проверка изоляции Codex (`[harness.<имя>] verify`) нашла лишнее в запросе.
+public enum CodexVerifyMode: String, Sendable, Equatable, CaseIterable {
+    /// Предупредить в меню и панели, Codex работает дальше.
+    case warn
+    /// Не вызывать этот harness, пока проверка не пройдёт.
+    case block
 }
 
 /// Способ обращения к LLM. Секция `[harness.<имя>]`.
@@ -162,6 +173,8 @@ public enum HarnessKind: String, Sendable, Equatable, CaseIterable {
 /// `type = "process"` — CLI-программа (Claude Code, OpenCode, llm, свой скрипт).
 /// Плейсхолдеры в аргументах: `{model}`, `{prompt_file}`, `{system_prompt}`, `{input}`,
 /// `{schema}`, `{schema_file}`. Каждый аргумент передаётся программе как есть, без shell-разбора.
+///
+/// `type = "codex"` — как `process`, но Codex получает отдельную папку `CODEX_HOME`.
 ///
 /// `type = "ollama"` — прямой запрос к Ollama: `url`, `think`, `keep_alive`, `options`.
 /// Ключи CLI (`executable`, `args`, `input`, `output`…) не используются.
@@ -189,6 +202,8 @@ public struct HarnessConfig: Sendable, Equatable {
     /// Сколько запросов этого harness идёт одновременно; остальные ждут очереди. 0 — без ограничения.
     /// Для Ollama ещё и `OLLAMA_NUM_PARALLEL`, если TapLess сам запускает Ollama.app.
     public var parallel: Int
+    /// Codex: что делать, если проверка изоляции нашла лишнее. Утечка `AGENTS.md` блокирует вызовы всегда.
+    public var verify: CodexVerifyMode
 
     /// Ollama: адрес сервера, например `http://127.0.0.1:11434`.
     public var url: String
@@ -204,7 +219,8 @@ public struct HarnessConfig: Sendable, Equatable {
                 input: HarnessInput = .stdin, output: HarnessOutput = .text, outputPath: String = "",
                 schemaOutputPath: String = "", env: [String: String] = [:],
                 kind: HarnessKind = .process, model: String = "", url: String = "", think: String = "",
-                keepAlive: String = "", options: [String: Double] = [:], parallel: Int = 0) {
+                keepAlive: String = "", options: [String: Double] = [:], parallel: Int = 0,
+                verify: CodexVerifyMode = .warn) {
         self.kind = kind
         self.model = model
         self.executable = executable
@@ -221,6 +237,7 @@ public struct HarnessConfig: Sendable, Equatable {
         self.keepAlive = keepAlive
         self.options = options
         self.parallel = parallel
+        self.verify = verify
     }
 
     /// Harness для Ollama.
@@ -233,7 +250,7 @@ public struct HarnessConfig: Sendable, Equatable {
     /// Для лога и меню: программа или адрес сервера.
     public var target: String {
         switch kind {
-        case .process: return executable
+        case .process, .codex: return executable
         case .ollama: return "Ollama \(url)"
         }
     }
@@ -398,6 +415,22 @@ public struct AppConfig: Sendable, Equatable {
             } else {
                 targets.append(OllamaTarget(url: url, model: model, parallel: harness.parallel))
             }
+        }
+        return targets
+    }
+
+    /// Harness Codex и модели, которые нужны включённым вариантам и `llm.harness`
+    /// (чистка замечаний и правка сырого текста), без повторов.
+    public var codexTargets: [CodexTarget] {
+        var uses = activeVariants.map { (harnessName(for: $0), model(for: $0)) }
+        let defaultModel = harnesses[llm.harness].map { $0.model.isEmpty ? llm.model : $0.model } ?? llm.model
+        uses.append((llm.harness, defaultModel))
+        var targets: [CodexTarget] = []
+        for (name, model) in uses {
+            guard let harness = harnesses[name], harness.kind == .codex else { continue }
+            let model = model.trimmingCharacters(in: .whitespaces)
+            guard !targets.contains(where: { $0.harnessName == name && $0.model == model }) else { continue }
+            targets.append(CodexTarget(harnessName: name, harness: harness, model: model))
         }
         return targets
     }

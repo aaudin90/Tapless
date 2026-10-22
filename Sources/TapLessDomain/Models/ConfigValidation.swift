@@ -75,7 +75,7 @@ extension AppConfig {
                 warnings.append("\(label): schema = \"\(name)\" — нет секции [schemas.\(name)].")
             }
             if variant.schema != nil, let harness = harnesses[harnessName(for: variant)],
-               harness.kind == .process, harness.schemaArgs.isEmpty {
+               harness.kind != .ollama, harness.schemaArgs.isEmpty {
                 warnings.append("\(label): у harness \"\(harnessName(for: variant))\" пустой schema_args — схема в программу не передаётся.")
             }
         }

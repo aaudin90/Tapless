@@ -1,6 +1,6 @@
 ---
 name: tapless-config
-description: Настройка TapLess (голосовой ввод для macOS) через его конфиг ~/.config/tapless.toml. Используй, когда пользователь просит поменять клавиши, варианты оформления, промпты, модель или harness (Ollama, Claude Code, OpenCode, свой CLI), словарь терминов, лог; или пополнить словарь по истории диалогов с агентами, где распознавание путало слова.
+description: Настройка TapLess (голосовой ввод для macOS) через его конфиг ~/.config/tapless.toml. Используй, когда пользователь просит поменять клавиши, варианты оформления, промпты, модель или harness (Ollama, Claude Code, Codex, OpenCode, свой CLI), словарь терминов, лог; или пополнить словарь по истории диалогов с агентами, где распознавание путало слова.
 ---
 
 # Настройка TapLess
@@ -121,17 +121,17 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 
 ### `[harness.<имя>]` — чем оформлять текст
 
-Готовые пресеты: `ollama` (по умолчанию), `claude`, `claude-bare`, `opencode`, `llm`. Имя секции свободное: можно добавить свой harness.
+Готовые пресеты: `ollama` (по умолчанию), `claude`, `claude-bare`, `codex`, `opencode`, `llm`. Имя секции свободное: можно добавить свой harness.
 
 Общие ключи:
 
 | Ключ | Что делает |
 |---|---|
-| `type` | `"process"` — запуск CLI (по умолчанию); `"ollama"` — HTTP-запрос к серверу Ollama. |
+| `type` | `"process"` — запуск CLI (по умолчанию); `"codex"` — запуск Codex CLI с отдельной папкой `CODEX_HOME` (см. «Переключить все варианты на Codex»); `"ollama"` — HTTP-запрос к серверу Ollama. |
 | `model` | Модель этого harness. Важнее `llm.model`; `model` варианта важнее её. |
 | `parallel` | Сколько вариантов идёт через harness одновременно, остальные ждут. `0` или нет ключа — без ограничения. У `ollama` по умолчанию `3`; очередь общая на сервер (`url`). |
 
-Ключи `type = "process"`:
+Ключи `type = "process"` и `type = "codex"`:
 
 | Ключ | Что делает |
 |---|---|
@@ -142,6 +142,7 @@ TapLess — голосовой ввод для macOS в меню-баре. По�
 | `output` | `"text"` — stdout и есть ответ; `"json"` — ответ в JSON по `output_path`. |
 | `output_path`, `schema_output_path` | Пути в JSON: ключи через точку, индексы числами (`"items.0.text"`, `-1` — последний). |
 | `[harness.<имя>.env]` | Свои переменные окружения. |
+| `verify` | Только `type = "codex"`. Что делать, если проверка изоляции нашла лишнее в запросе: `"warn"` (по умолчанию) — предупредить, `"block"` — не вызывать harness. `AGENTS.md` в запросе блокирует вызовы всегда. |
 
 Плейсхолдеры в `args`, `text_args`, `schema_args`: `{model}`, `{prompt_file}`, `{system_prompt}`, `{input}`, `{schema}`, `{schema_file}`. Программа также получает переменные `TAPLESS_MODEL`, `TAPLESS_PROMPT_FILE`, `TAPLESS_SCHEMA_FILE`, `TAPLESS_VARIANT` (клавиша), `TAPLESS_VARIANT_NAME`.
 
@@ -354,6 +355,38 @@ executable = "my-claude-wrapper"
 ```bash
 echo '<transcript>ну вот короче надо проверить клауд код</transcript>' | zsh -l -c '"$0" "$@"' claude -p --safe-mode --settings '{"language":""}' --model haiku --tools "" --output-format text
 ```
+
+### Переключить все варианты на Codex
+
+```toml
+[llm]
+harness = "codex"
+```
+
+Команда `codex` должна работать в Терминале, вход в Codex — выполнен (`codex login`). Модель по умолчанию — `gpt-6-luna` (`model` в `[harness.codex]`), рассуждение выключено (`model_reasoning_effort="none"` в `args`). Если `codex` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
+
+```toml
+[harness.codex]
+executable = "my-codex-wrapper"
+```
+
+Чем `type = "codex"` отличается от обычного CLI:
+
+- TapLess запускает Codex с отдельной папкой `CODEX_HOME` — `~/Library/Application Support/TapLess/codex-home`. Иначе Codex добавил бы к промпту `~/.codex/AGENTS.md` пользователя, загрузил MCP-серверы, навыки и память.
+- В эту папку TapLess переносит из `~/.codex` только вход (`auth.json` — символическая ссылка) и провайдера: `model_provider`, `[model_providers.*]`, `openai_base_url`, `chatgpt_base_url`, `forced_login_method`, `forced_chatgpt_workspace_id`, `cli_auth_credentials_store`. Все инструменты, веб-поиск и телеметрию TapLess выключает: модель получает пустой список инструментов. Инструменты из профиля модели убирает свой каталог моделей `model-catalog.json` — копия `models_cache.json` Codex без них; если кэша моделей нет, TapLess берёт встроенный каталог (`codex debug models --bundled`). Папка пересобирается при изменении `~/.codex/config.toml`; править её руками бесполезно.
+- Другой источник входа и провайдера — `CODEX_HOME` в `[harness.codex.env]`.
+- Вход в связке ключей (`cli_auth_credentials_store = "keyring"`) так не работает: нужен `auth.json` или `CODEX_API_KEY` в `[harness.codex.env]`.
+- Системный промпт TapLess (`base_prompt` со словарём + промпт варианта) заменяет встроенный промпт Codex через `-c model_instructions_file="{prompt_file}"`.
+- Если модель не принимает `model_reasoning_effort="none"`, замени `args` целиком, со значением `"low"`.
+- Проверка изоляции. При запуске TapLess, раз в сутки перед вызовом и после пересборки папки TapLess сверяет версию Codex, каталог моделей, конфиг и `args`. Если что-то изменилось, Codex с этими `args` отправляет пробный запрос на локальный сервер TapLess (до провайдера он не доходит, токены не тратятся). TapLess проверяет, что в запросе только его промпт и текст: без инструментов, навыков, `AGENTS.md`, с той же моделью и `model_reasoning_effort`. Итог — в меню TapLess (строка «Codex …», пункт «Проверить Codex снова») и в логе; прошлые итоги — `~/Library/Application Support/TapLess/codex-check.json`. Если проверка нашла лишнее после правки `args`, верни флаги из `config.default.toml`.
+
+Проверить Codex без GUI (в пустой папке, без `AGENTS.md`):
+
+```bash
+cd "$(mktemp -d)" && echo '<transcript>ну вот короче проверка связи</transcript>' | CODEX_HOME="$HOME/Library/Application Support/TapLess/codex-home" zsh -l -c '"$0" "$@"' codex exec --ephemeral --skip-git-repo-check --sandbox read-only --model gpt-6-luna -c 'model_reasoning_effort="none"' -
+```
+
+Папка `codex-home` появляется после первого варианта через Codex. Пока её нет, проверяй без `CODEX_HOME=…`; тогда Codex подмешает `~/.codex/AGENTS.md`.
 
 ### Один вариант через другой harness
 

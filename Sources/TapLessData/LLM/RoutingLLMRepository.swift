@@ -1,17 +1,19 @@
 import Foundation
 import TapLessDomain
 
-/// Выбирает реализацию по типу harness варианта: CLI-программа или Ollama.
+/// Выбирает реализацию по типу harness варианта: CLI-программа, Codex или Ollama.
 /// Если у harness задан `parallel`, лишние запросы ждут в очереди (`RequestLimiter`).
 /// Очередь Ollama — общая на сервер (url): несколько harness делят его слоты.
 public struct RoutingLLMRepository: LLMRepository {
     private let process: LLMRepository
     private let ollama: LLMRepository
+    private let codex: LLMRepository
     private let limiter = RequestLimiter()
 
-    public init(process: LLMRepository, ollama: LLMRepository) {
+    public init(process: LLMRepository, ollama: LLMRepository, codex: LLMRepository) {
         self.process = process
         self.ollama = ollama
+        self.codex = codex
     }
 
     public func complete(_ request: LLMRequest) async throws -> String {
@@ -35,11 +37,11 @@ public struct RoutingLLMRepository: LLMRepository {
         }
     }
 
-    /// Ключ очереди: сервер для Ollama, имя harness для CLI.
+    /// Ключ очереди: сервер для Ollama, имя harness для CLI и Codex.
     static func queueKey(_ request: LLMRequest) -> String {
         switch request.harness.kind {
         case .ollama: return "Ollama " + request.harness.url.trimmingCharacters(in: .whitespaces)
-        case .process: return "harness " + request.harnessName
+        case .process, .codex: return "harness " + request.harnessName
         }
     }
 
@@ -47,6 +49,7 @@ public struct RoutingLLMRepository: LLMRepository {
         switch request.harness.kind {
         case .process: return try await process.complete(request)
         case .ollama: return try await ollama.complete(request)
+        case .codex: return try await codex.complete(request)
         }
     }
 }

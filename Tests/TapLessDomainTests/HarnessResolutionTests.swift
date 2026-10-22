@@ -132,6 +132,38 @@ private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String =
         ])
     }
 
+    @Test func codexTargetsCoverVariantsAndDefaultHarness() {
+        let codex = HarnessConfig(executable: "codex", args: [], kind: .codex, model: "luna")
+        let harnesses: [String: HarnessConfig] = ["cli": cli, "codex": codex, "codex2": codex]
+        var variants = [
+            VariantConfig(name: "a", prompt: "p", harness: "codex"),
+            VariantConfig(name: "b", prompt: "p", harness: "codex"),
+            VariantConfig(name: "c", prompt: "p", model: "sol", harness: "codex"),
+            VariantConfig(name: "d", prompt: "p", harness: "cli"),
+            VariantConfig(name: "e", prompt: "p", harness: "codex2", enabled: false),
+        ]
+        var config = makeConfig(harnesses: harnesses, variants: variants)
+        config.llm.harness = "cli"
+        #expect(config.codexTargets.map(\.key) == ["codex|luna", "codex|sol"])
+
+        // llm.harness нужен чистке замечаний и правке сырого текста, даже если варианты его не берут.
+        variants.removeAll { $0.harness == "codex" }
+        config = makeConfig(harnesses: harnesses, variants: variants)
+        config.llm.harness = "codex2"
+        #expect(config.codexTargets.map(\.key) == ["codex2|luna"])
+        #expect(config.codexTargets.first?.harness.verify == .warn)
+    }
+
+    @Test func codexReportText() {
+        let target = CodexTarget(harnessName: "codex", harness: HarnessConfig(executable: "codex", args: []), model: "m")
+        let report = CodexCheckReport(target: target, version: "codex-cli 1.0", status: .problems(["a", "b"]),
+                                      blocking: true, isNew: true, checkedAt: Date())
+        #expect(report.text == "Codex «codex»: в запросе лишнее — a и ещё 1. Вызовы заблокированы")
+        let passed = CodexCheckReport(target: target, version: "codex-cli 1.0", status: .passed,
+                                      blocking: false, isNew: false, checkedAt: Date())
+        #expect(passed.text == "Codex «codex»: изоляция проверена (codex-cli 1.0)")
+    }
+
     @Test func localLLMStatusText() {
         #expect(LocalLLMStatus.downloading(model: "m", fraction: 0.456).text == "скачиваю m: 45%")
         #expect(LocalLLMStatus.downloading(model: "m", fraction: nil).text == "скачиваю m…")

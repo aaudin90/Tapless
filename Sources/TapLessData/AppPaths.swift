@@ -10,6 +10,10 @@ public struct AppPaths: Sendable {
     public let run: URL
     /// Пустая рабочая папка LLM-команды, чтобы claude не подхватил CLAUDE.md случайного проекта.
     public let llmWorkdir: URL
+    /// `CODEX_HOME` для harness `type = "codex"`: вход и провайдер пользователя без его `AGENTS.md` и MCP.
+    public let codexHome: URL
+    /// Итоги проверок изоляции Codex: при той же версии и тех же настройках проверка не повторяется.
+    public let codexCheckFile: URL
     public let logFile: URL
 
     public static func make() -> AppPaths {
@@ -33,6 +37,8 @@ public struct AppPaths: Sendable {
             models: support.appendingPathComponent("models", isDirectory: true),
             run: support.appendingPathComponent("run", isDirectory: true),
             llmWorkdir: support.appendingPathComponent("llm-workdir", isDirectory: true),
+            codexHome: support.appendingPathComponent("codex-home", isDirectory: true),
+            codexCheckFile: support.appendingPathComponent("codex-check.json"),
             logFile: home.appendingPathComponent("Library/Logs/TapLess/TapLess.log")
         )
     }

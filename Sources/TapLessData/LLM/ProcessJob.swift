@@ -263,7 +263,8 @@ final class ProcessJob: @unchecked Sendable {
             throw LLMError.failed(code, details)
         }
         Log.debug("\(summary), код 0", .llm)
-        if !stderr.isEmpty {
+        // Codex повторяет в stderr вход и ответ, поэтому stderr удачного запуска — только с include_text.
+        if !stderr.isEmpty && Log.includeText {
             Log.debug("[\(spec.label)] stderr: \(ShellTools.lastLines(stderr, maxChars: 800))", .llm)
         }
         let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)

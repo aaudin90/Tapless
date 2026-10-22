@@ -53,7 +53,7 @@ private func eventually(_ condition: () async -> Bool) async -> Bool {
 @Suite struct RequestLimiterTests {
     @Test func limitsConcurrentRequestsPerHarness() async throws {
         let llm = GatedLLM()
-        let routing = RoutingLLMRepository(process: llm, ollama: llm)
+        let routing = RoutingLLMRepository(process: llm, ollama: llm, codex: llm)
         let harness = HarnessConfig.ollama(url: "http://127.0.0.1:11434", parallel: 2)
 
         let tasks = (1...5).map { key in Task { try await routing.complete(request(key, harness: harness)) } }
@@ -84,7 +84,7 @@ private func eventually(_ condition: () async -> Bool) async -> Bool {
     }
 
     @Test func failedRequestReleasesSlot() async throws {
-        let routing = RoutingLLMRepository(process: FailingLLM(), ollama: FailingLLM())
+        let routing = RoutingLLMRepository(process: FailingLLM(), ollama: FailingLLM(), codex: FailingLLM())
         let harness = HarnessConfig.ollama(url: "http://127.0.0.1:11434", parallel: 1)
         for key in 1...3 {
             await #expect(throws: LLMError.self) { try await routing.complete(request(key, harness: harness)) }
@@ -93,7 +93,7 @@ private func eventually(_ condition: () async -> Bool) async -> Bool {
 
     @Test func zeroMeansNoLimit() async throws {
         let llm = GatedLLM()
-        let routing = RoutingLLMRepository(process: llm, ollama: llm)
+        let routing = RoutingLLMRepository(process: llm, ollama: llm, codex: llm)
         let harness = HarnessConfig.ollama(url: "http://127.0.0.1:11434")
 
         let tasks = (1...4).map { key in Task { try await routing.complete(request(key, harness: harness)) } }

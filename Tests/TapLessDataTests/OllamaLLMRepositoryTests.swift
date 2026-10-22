@@ -392,7 +392,7 @@ private final class FakeLLM: LLMRepository, @unchecked Sendable {
     @Test func dispatchesByHarnessKind() async throws {
         let process = FakeLLM(reply: "process")
         let ollama = FakeLLM(reply: "ollama")
-        let router = RoutingLLMRepository(process: process, ollama: ollama)
+        let router = RoutingLLMRepository(process: process, ollama: ollama, codex: process)
 
         let cli = makeRequest(harness: HarnessConfig(executable: "x", args: []))
         #expect(try await router.complete(cli) == "process")

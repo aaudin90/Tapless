@@ -36,6 +36,11 @@ import TapLessDomain
         #expect(config.harnesses["claude"]?.args.contains("{prompt_file}") == true)
         #expect(config.harnesses["claude"]?.schemaOutputPath == "structured_output")
         #expect(config.harnesses["claude"]?.args.contains("--safe-mode") == true)
+        #expect(config.harnesses["codex"]?.kind == .codex)
+        #expect(config.harnesses["codex"]?.executable == "codex")
+        #expect(config.harnesses["codex"]?.model == "gpt-6-luna")
+        #expect(config.harnesses["codex"]?.args.contains(#"model_instructions_file="{prompt_file}""#) == true)
+        #expect(config.harnesses["codex"]?.schemaArgs == ["--output-schema", "{schema_file}"])
         #expect(config.schemas["text"]?.resultPath == "text")
         #expect(config.log.logLevel == .debug)
         #expect(!config.log.includeText)
@@ -358,6 +363,38 @@ import TapLessDomain
         #expect(loaded.warnings.isEmpty)
     }
 
+    @Test func codexExecutableOverrideKeepsType() throws {
+        let repository = try makeRepository("[harness.codex]\nexecutable = \"codex-proxy\"")
+        let loaded = try repository.load()
+        let codex = try #require(loaded.config.harnesses["codex"])
+        #expect(codex.kind == .codex)
+        #expect(codex.executable == "codex-proxy")
+        #expect(codex.args == repository.defaults().harnesses["codex"]?.args)
+        #expect(loaded.warnings.isEmpty)
+    }
+
+    @Test func codexVerifyMode() throws {
+        let repository = try makeRepository("[harness.codex]\nverify = \"block\"")
+        #expect(try repository.load().config.harnesses["codex"]?.verify == .block)
+        #expect(repository.defaults().harnesses["codex"]?.verify == .warn)
+        do {
+            _ = try makeRepository("[harness.codex]\nverify = \"never\"").load()
+            Issue.record("ожидалась ошибка конфига")
+        } catch {
+            #expect(error.localizedDescription.contains("harness.codex.verify"))
+        }
+    }
+
+    @Test func codexHarnessNeedsExecutable() throws {
+        let repository = try makeRepository("[harness.my]\ntype = \"codex\"")
+        do {
+            _ = try repository.load()
+            Issue.record("ожидалась ошибка конфига")
+        } catch {
+            #expect(error.localizedDescription.contains("harness.my: не задан executable"))
+        }
+    }
+
     @Test func newHarnessNeedsOnlyExecutable() throws {
         let repository = try makeRepository("""
         [llm]
@@ -431,10 +468,10 @@ import TapLessDomain
     }
 
     @Test func unknownDefaultHarnessAndLogLevelWarn() throws {
-        let repository = try makeRepository("[llm]\nharness = \"codex\"\n\n[log]\nlevel = \"verbose\"")
+        let repository = try makeRepository("[llm]\nharness = \"gemini\"\n\n[log]\nlevel = \"verbose\"")
         let warnings = try repository.load().warnings
         #expect(warnings.count == 2)
-        #expect(warnings.contains { $0.contains("llm.harness = \"codex\"") })
+        #expect(warnings.contains { $0.contains("llm.harness = \"gemini\"") })
         #expect(warnings.contains { $0.contains("log.level = \"verbose\"") })
     }
 

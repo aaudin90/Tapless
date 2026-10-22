@@ -14,6 +14,8 @@ enum LLMError: LocalizedError {
     case serverUnavailable(String, String)
     case modelMissing(String)
     case http(Int, String)
+    /// Вызов запрещён проверкой изоляции Codex.
+    case blocked(String)
 
     var errorDescription: String? {
         switch self {
@@ -42,6 +44,8 @@ enum LLMError: LocalizedError {
             return "Модели «\(model)» нет в Ollama: выполните «ollama pull \(model)»"
         case .http(let code, let details):
             return details.isEmpty ? "Ошибка HTTP \(code)" : "HTTP \(code): \(details)"
+        case .blocked(let reason):
+            return reason
         }
     }
 }
@@ -96,18 +100,14 @@ public struct ProcessLLMRepository: LLMRepository {
             ? ShellTools.expandTilde(harness.executable)
             : harness.executable
 
-        var env = ProcessInfo.processInfo.environment
-        let extraPath = settings.extraPath.map(ShellTools.expandTilde).joined(separator: ":")
-        let basePath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = extraPath.isEmpty ? basePath : extraPath + ":" + basePath
-        env["NO_COLOR"] = "1"
-        env["TAPLESS_MODEL"] = request.model
-        env["TAPLESS_PROMPT_FILE"] = promptFile.path
-        env["TAPLESS_VARIANT"] = String(request.variantKey)
-        env["TAPLESS_VARIANT_NAME"] = request.variantName
-        if let schema { env["TAPLESS_SCHEMA_FILE"] = schema.file.path }
-        for (name, value) in settings.env { env[name] = value }
-        for (name, value) in harness.env { env[name] = value }
+        var tapless = [
+            "TAPLESS_MODEL": request.model,
+            "TAPLESS_PROMPT_FILE": promptFile.path,
+            "TAPLESS_VARIANT": String(request.variantKey),
+            "TAPLESS_VARIANT_NAME": request.variantName,
+        ]
+        if let schema { tapless["TAPLESS_SCHEMA_FILE"] = schema.file.path }
+        let env = Self.environment(settings: settings, harness: harness, extra: tapless)
 
         let workdir = settings.workdir.isEmpty
             ? defaultWorkdir
@@ -167,6 +167,21 @@ public struct ProcessLLMRepository: LLMRepository {
         }
         Log.info(String(format: "[%@] готово за %.1f с, %ld симв.", label, Date().timeIntervalSince(started), result.count), .llm)
         return result
+    }
+
+    /// Окружение программы: окружение TapLess, `llm.extra_path` в начале PATH, `NO_COLOR`, `extra`,
+    /// затем `[llm.env]` и `[harness.<имя>.env]` — переменные пользователя важнее.
+    static func environment(settings: LLMConfig, harness: HarnessConfig,
+                            extra: [String: String] = [:]) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let extraPath = settings.extraPath.map(ShellTools.expandTilde).joined(separator: ":")
+        let basePath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = extraPath.isEmpty ? basePath : extraPath + ":" + basePath
+        env["NO_COLOR"] = "1"
+        for (name, value) in extra { env[name] = value }
+        for (name, value) in settings.env { env[name] = value }
+        for (name, value) in harness.env { env[name] = value }
+        return env
     }
 
     // MARK: - Схема
