@@ -35,6 +35,7 @@ import TapLessDomain
         #expect(config.harnesses["claude"]?.executable == "claude")
         #expect(config.harnesses["claude"]?.args.contains("{prompt_file}") == true)
         #expect(config.harnesses["claude"]?.schemaOutputPath == "structured_output")
+        #expect(config.harnesses["claude"]?.args.contains("--safe-mode") == true)
         #expect(config.schemas["text"]?.resultPath == "text")
         #expect(config.log.logLevel == .debug)
         #expect(!config.log.includeText)

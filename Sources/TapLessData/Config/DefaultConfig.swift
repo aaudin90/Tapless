@@ -266,10 +266,17 @@ feedback_prompt = '''
 #    harness = "claude"
 # ──────────────────────────────────────────────────────────────────────
 
+# Claude Code по подписке или ключу. --system-prompt-file заменяет промпт Claude Code нашим,
+# --tools "" убирает все инструменты. --safe-mode не грузит ~/.claude/CLAUDE.md, навыки,
+# плагины, хуки и MCP пользователя (вход работает как обычно), а --settings '{"language":""}'
+# снимает language из ~/.claude/settings.json: иначе ответ шёл бы на языке настроек,
+# а не диктовки. Остаётся только короткий блок об окружении (папка, ОС, дата).
 [harness.claude]
 executable = "claude"
 args = [
   "-p",
+  "--safe-mode",
+  "--settings", '{"language":""}',
   "--model", "{model}",
   "--system-prompt-file", "{prompt_file}",
   "--tools", "",
