@@ -342,7 +342,7 @@ harness = "claude"
 model = "haiku"
 ```
 
-Команда `claude` должна работать в Терминале. Если `claude` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
+Команда `claude` должна работать в Терминале. Пресет запускает `claude -p --safe-mode` с промптом TapLess вместо промпта Claude Code и без инструментов: `~/.claude/CLAUDE.md`, навыки, плагины, хуки и MCP пользователя в запрос не попадают, `language` из `~/.claude/settings.json` снят (`--settings '{"language":""}'`). Если `claude` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
 
 ```toml
 [harness.claude]
@@ -352,7 +352,7 @@ executable = "my-claude-wrapper"
 Проверить такой harness без GUI:
 
 ```bash
-echo '<transcript>ну вот короче надо проверить клауд код</transcript>' | zsh -l -c '"$0" "$@"' claude -p --model haiku --tools "" --output-format text
+echo '<transcript>ну вот короче надо проверить клауд код</transcript>' | zsh -l -c '"$0" "$@"' claude -p --safe-mode --settings '{"language":""}' --model haiku --tools "" --output-format text
 ```
 
 ### Один вариант через другой harness
