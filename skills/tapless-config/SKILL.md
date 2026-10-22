@@ -343,6 +343,8 @@ harness = "claude"
 model = "haiku"
 ```
 
+`haiku` — быстрая, но ошибается чаще. Точнее и не медленнее — `sonnet`: по замеру TapLess критических ошибок 17 % против 39 % у `haiku` (таблица — в README, «Какую модель выбрать»). Для `sonnet` задай `model = "sonnet"`.
+
 Команда `claude` должна работать в Терминале. Пресет запускает `claude -p --safe-mode` с промптом TapLess вместо промпта Claude Code и без инструментов: `~/.claude/CLAUDE.md`, навыки, плагины, хуки и MCP пользователя в запрос не попадают, `language` из `~/.claude/settings.json` снят (`--settings '{"language":""}'`). Если `claude` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
 
 ```toml
@@ -377,7 +379,7 @@ executable = "my-codex-wrapper"
 - Другой источник входа и провайдера — `CODEX_HOME` в `[harness.codex.env]`.
 - Вход в связке ключей (`cli_auth_credentials_store = "keyring"`) так не работает: нужен `auth.json` или `CODEX_API_KEY` в `[harness.codex.env]`.
 - Системный промпт TapLess (`base_prompt` со словарём + промпт варианта) заменяет встроенный промпт Codex через `-c model_instructions_file="{prompt_file}"`.
-- Если модель не принимает `model_reasoning_effort="none"`, замени `args` целиком, со значением `"low"`.
+- Если модель не принимает `model_reasoning_effort="none"`, замени `args` целиком, со значением `"low"`. Так нужно для `gpt-6.1-sol`: по замеру TapLess он точнее `gpt-6-luna` (критических ошибок 14 % против 27 %), но медленнее (медиана 9,2 с против 7,0 с).
 - Проверка изоляции. При запуске TapLess, раз в сутки перед вызовом и после пересборки папки TapLess сверяет версию Codex, каталог моделей, конфиг и `args`. Если что-то изменилось, Codex с этими `args` отправляет пробный запрос на локальный сервер TapLess (до провайдера он не доходит, токены не тратятся). TapLess проверяет, что в запросе только его промпт и текст: без инструментов, навыков, `AGENTS.md`, с той же моделью и `model_reasoning_effort`. Итог — в меню TapLess (строка «Codex …», пункт «Проверить Codex снова») и в логе; прошлые итоги — `~/Library/Application Support/TapLess/codex-check.json`. Если проверка нашла лишнее после правки `args`, верни флаги из `config.default.toml`.
 
 Проверить Codex без GUI (в пустой папке, без `AGENTS.md`):
