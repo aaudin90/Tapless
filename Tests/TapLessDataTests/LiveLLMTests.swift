@@ -17,9 +17,11 @@ struct LiveLLMTests {
         var config = try FileConfigRepository(fileURL: paths.configFile).load().config
         Log.minimumLevel = config.log.logLevel
         edit(&config)
+        let process = ProcessLLMRepository(settings: config.llm, runDirectory: paths.run, defaultWorkdir: paths.llmWorkdir)
         let llm = RoutingLLMRepository(
-            process: ProcessLLMRepository(settings: config.llm, runDirectory: paths.run, defaultWorkdir: paths.llmWorkdir),
-            ollama: OllamaLLMRepository(settings: config.llm)
+            process: process,
+            ollama: OllamaLLMRepository(settings: config.llm),
+            codex: CodexLLMRepository(process: process, settings: config.llm, homeDirectory: paths.codexHome)
         )
         return FormatTextUseCase(llm: llm, config: config)
     }
@@ -35,6 +37,22 @@ struct LiveLLMTests {
         let output = try await useCase.execute(text: "ну вот короче проверка связи раз два три", variantKey: useCase.firstVariantKey)
         #expect(!output.isEmpty)
         #expect(!output.hasPrefix("{"))
+    }
+
+    /// Проверка изоляции настоящего Codex: harness `codex` из конфига, пробный запрос на локальный сервер.
+    @Test func codexIsolation() async throws {
+        let paths = AppPaths.make()
+        let config = try FileConfigRepository(fileURL: paths.configFile).load().config
+        let harness = try #require(config.harnesses["codex"])
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent("tapless-live-codex-check.json")
+        defer { try? FileManager.default.removeItem(at: state) }
+        let process = ProcessLLMRepository(settings: config.llm, runDirectory: paths.run, defaultWorkdir: paths.llmWorkdir)
+        let codex = CodexLLMRepository(process: process, settings: config.llm, homeDirectory: paths.codexHome,
+                                       checkStateFile: state)
+        let target = CodexTarget(harnessName: "codex", harness: harness,
+                                 model: harness.model.isEmpty ? config.llm.model : harness.model)
+        let report = try #require(await codex.verifier.check([target], force: true).first)
+        #expect(report.status == .passed, "\(report.text)")
     }
 
     /// Все варианты сразу, как в панели: проверка очереди `parallel` на живом harness.

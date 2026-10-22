@@ -15,6 +15,7 @@ struct AppDependencies {
     let transcribe: TranscribeSpeechUseCase
     let format: FormatTextUseCase
     let prepareLocalLLM: PrepareLocalLLMUseCase
+    let checkCodex: CheckCodexUseCase
     /// История диктовок (`[history]`). Тот же экземпляр пишет вызовы LLM через `HistoryLLMRepository`.
     let history: DictationHistoryUseCase
     /// Папка истории: открывается из меню.
@@ -40,6 +41,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let transcribe: TranscribeSpeechUseCase
     private let format: FormatTextUseCase
     private let prepareLocalLLM: PrepareLocalLLMUseCase
+    private let checkCodex: CheckCodexUseCase
     private let history: DictationHistoryUseCase
     private let historyDirectory: URL
     private let modelsDirectory: URL
@@ -90,6 +92,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Прогрев кэша промпта Ollama после подготовки; новая диктовка его отменяет.
     private var warmUpTask: Task<Void, Never>?
 
+    /// Проверка изоляции Codex: итоги по `CodexTarget.key`, одновременно идёт одна проверка из контроллера.
+    private var codexReports: [String: CodexCheckReport] = [:]
+    private var codexCheckTask: Task<Void, Never>?
+    /// О каких итогах (`codexReportID`) уже предупредили: одно предупреждение на проверку.
+    private var codexWarned: Set<String> = []
+    /// Предупреждение, которое покажется строкой в панели при следующей диктовке.
+    private var pendingCodexWarning: String?
+
     init(_ deps: AppDependencies) {
         config = deps.config
         configError = deps.configError
@@ -98,6 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         transcribe = deps.transcribe
         format = deps.format
         prepareLocalLLM = deps.prepareLocalLLM
+        checkCodex = deps.checkCodex
         history = deps.history
         historyDirectory = deps.historyDirectory
         modelsDirectory = deps.modelsDirectory
@@ -141,6 +152,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         requestPermissionsIfNeeded()
         loadModel()
         startLocalLLMSetup(reason: "запуск приложения")
+        startCodexCheck(force: false, reason: "запуск приложения")
         pruneHistory(reason: "запуск приложения")
 
         if let configError {
@@ -159,6 +171,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cancelJobs()
         cancelWarmUp()
         localLLMTask?.cancel()
+        codexCheckTask?.cancel()
         _ = recorder.stop()
         Log.info("TapLess завершён", .app)
     }
@@ -546,6 +559,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.variants = initialVariantStates()
         if localLLMStatus != .notUsed && localLLMStatus != .ready {
             model.note = "Ollama: \(localLLMStatus.text)"
+        } else if let warning = pendingCodexWarning {
+            model.note = "⚠︎ \(warning)"
+            pendingCodexWarning = nil
         }
         updateStatusIcon()
 
@@ -1273,6 +1289,44 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return "готова (\(models.joined(separator: ", ")))"
     }
 
+    // MARK: - Codex
+
+    /// Проверяет изоляцию Codex. Без `force` полная проверка идёт, только если изменились версия Codex,
+    /// каталог моделей, конфиг или аргументы harness. Итоги фоновых проверок перед вызовами тоже приходят сюда.
+    private func startCodexCheck(force: Bool, reason: String) {
+        guard checkCodex.isUsed, codexCheckTask == nil else { return }
+        Log.info("Проверка изоляции Codex (\(reason))", .llm)
+        let check = checkCodex
+        codexCheckTask = Task { [weak self] in
+            await check.onBackgroundReport { report in
+                Task { @MainActor in self?.handleCodexReport(report, manual: false) }
+            }
+            let reports = await check.execute(force: force)
+            guard let self else { return }
+            self.codexCheckTask = nil
+            reports.forEach { self.handleCodexReport($0, manual: force) }
+        }
+    }
+
+    /// Запоминает итог для меню и предупреждает о проблемах один раз на проверку: сообщением,
+    /// если панель закрыта, иначе строкой в панели при следующей диктовке. Сбой самой проверки — только в лог.
+    private func handleCodexReport(_ report: CodexCheckReport, manual: Bool) {
+        codexReports[report.target.key] = report
+        let id = "\(report.target.key)|\(report.checkedAt.timeIntervalSince1970)"
+        let shouldWarn: Bool
+        switch report.status {
+        case .problems: shouldWarn = report.isNew || manual
+        case .passed, .unavailable: shouldWarn = manual
+        }
+        guard shouldWarn, !codexWarned.contains(id) else { return }
+        codexWarned.insert(id)
+        if state == .idle || state == .message {
+            showMessage(report.text, seconds: manual ? 4 : 8)
+        } else if case .problems = report.status {
+            pendingCodexWarning = report.text
+        }
+    }
+
     // MARK: - Разрешения
 
     private func authStatusName(_ status: AVAuthorizationStatus) -> String {
@@ -1368,6 +1422,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default:
                 break
             }
+        }
+        if checkCodex.isUsed {
+            for target in checkCodex.targets {
+                guard let report = codexReports[target.key] else {
+                    info("Codex «\(target.harnessName)»: \(codexCheckTask == nil ? "не проверен" : "проверка…")")
+                    continue
+                }
+                if case .problems = report.status { info("⚠︎ \(report.text)") } else { info(report.text) }
+            }
+            action("Проверить Codex снова", #selector(recheckCodexAction), enabled: codexCheckTask == nil)
         }
         if configError != nil { info("⚠︎ Ошибка в конфиге — исправьте файл и перезапустите") }
         if !configWarnings.isEmpty { info("⚠︎ В конфиге есть замечания — см. лог") }
@@ -1491,6 +1555,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func recheckOllamaAction() {
         Log.info("Меню: Проверить Ollama снова", .app)
         startLocalLLMSetup(reason: "меню")
+    }
+
+    @objc private func recheckCodexAction() {
+        Log.info("Меню: Проверить Codex снова", .app)
+        startCodexCheck(force: true, reason: "меню")
     }
 
     @objc private func grantAccessibilityAction() {

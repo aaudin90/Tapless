@@ -131,9 +131,10 @@ struct ConfigDTO: Decodable {
         let keepAlive: String?
         let options: [String: Double]?
         let parallel: Int?
+        let verify: String?
 
         enum CodingKeys: String, CodingKey, CaseIterable {
-            case type, model, executable, args, input, output, env, url, think, options, parallel
+            case type, model, executable, args, input, output, env, url, think, options, parallel, verify
             case textArgs = "text_args"
             case schemaArgs = "schema_args"
             case outputPath = "output_path"
@@ -334,7 +335,7 @@ extension ConfigDTO.Harness {
             throw ConfigError.schema("harness.\(name).\(key) = \"\(value)\": ожидается \(allowed)")
         }
         let kind = try parse(type, key: "type", default: HarnessKind.process)
-        if kind == .process && (executable ?? "").isEmpty {
+        if kind != .ollama && (executable ?? "").isEmpty {
             throw ConfigError.schema("harness.\(name): не задан executable (для Ollama укажите type = \"ollama\")")
         }
         return HarnessConfig(
@@ -353,7 +354,8 @@ extension ConfigDTO.Harness {
             think: think?.value ?? "",
             keepAlive: keepAlive ?? "",
             options: options ?? [:],
-            parallel: try parallelValue(name: name)
+            parallel: try parallelValue(name: name),
+            verify: try parse(verify, key: "verify", default: CodexVerifyMode.warn)
         )
     }
 

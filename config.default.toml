@@ -106,7 +106,8 @@ drop_phrases = [
 [llm]
 # Чем оформлять текст: имя harness из секций [harness.<имя>] ниже.
 # По умолчанию — локальная модель в Ollama: работает без сети и подписок.
-# Через Claude Code: harness = "claude" (нужна команда claude).
+# Через Claude Code: harness = "claude" (нужна команда claude);
+# через Codex: harness = "codex" (нужна команда codex и вход в неё).
 # Вариант может выбрать свой harness ключом harness = "…".
 harness = "ollama"
 
@@ -209,9 +210,10 @@ feedback_prompt = '''
 
 # ──────────────────────────────────────────────────────────────────────
 #  Harness — как обращаться к LLM. Своя секция [harness.<имя>] на каждую
-#  программу или сервер: Claude Code, OpenCode, llm, Ollama, свой скрипт.
-#    type               — "process": запуск CLI (по умолчанию); "ollama": HTTP-запрос
-#                         к серверу Ollama, ключи ниже про CLI не нужны
+#  программу или сервер: Claude Code, Codex, OpenCode, llm, Ollama, свой скрипт.
+#    type               — "process": запуск CLI (по умолчанию); "codex": запуск CLI
+#                         Codex с отдельной папкой CODEX_HOME (см. [harness.codex]);
+#                         "ollama": HTTP-запрос к серверу Ollama, ключи ниже про CLI не нужны
 #    model              — модель по умолчанию для этого harness (важнее llm.model,
 #                         model варианта важнее её)
 #    parallel           — сколько вариантов идёт через этот harness одновременно,
@@ -221,7 +223,13 @@ feedback_prompt = '''
 #                         запущенный сервер не меняется: его OLLAMA_NUM_PARALLEL
 #                         должен быть не меньше parallel, иначе лишние ждут на сервере.
 #
-#  Ключи для type = "process":
+#  Ключ для type = "codex":
+#    verify             — что делать, если проверка изоляции нашла лишнее в запросе
+#                         Codex: "warn" — предупредить в меню и панели (по умолчанию),
+#                         "block" — не вызывать harness, пока проверка не пройдёт.
+#                         AGENTS.md в запросе блокирует вызовы всегда.
+#
+#  Ключи для type = "process" и "codex":
 #    executable         — программа: имя в PATH, полный путь или функция shell
 #    args               — аргументы для всех запусков
 #    text_args          — добавляются, если у варианта нет схемы
@@ -313,6 +321,53 @@ schema_output_path = "structured_output"
 
 [harness.claude-bare.env]
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+
+# Codex CLI (codex exec). Включение: llm.harness = "codex" или harness = "codex" у варианта.
+# Codex запускается с отдельной папкой CODEX_HOME (~/Library/Application Support/TapLess/codex-home):
+# иначе он подмешивает к промпту ~/.codex/AGENTS.md, грузит MCP-серверы, навыки и память.
+# В эту папку TapLess переносит из ~/.codex только вход (ссылка на auth.json) и провайдера
+# (model_provider, [model_providers.*] и другие ключи входа из config.toml), а инструменты,
+# веб-поиск и телеметрию выключает. Инструменты, которые включает профиль модели
+# (exec, wait, collaboration.*), убирает каталог моделей model-catalog.json — копия
+# models_cache.json без них (нет кэша — из встроенного каталога codex debug models --bundled):
+# модель получает пустой список инструментов.
+# Проверка изоляции: при запуске TapLess, раз в сутки перед вызовом и после пересборки папки
+# TapLess сверяет версию Codex, каталог и аргументы. Если что-то изменилось, Codex с этими
+# аргументами отправляет пробный запрос на локальный сервер TapLess (до провайдера он не доходит),
+# и TapLess проверяет, что в запросе только его промпт и текст, без инструментов и чужих
+# инструкций. Итог — в меню («Проверить Codex снова») и в логе.
+# Свой ~/.codex — CODEX_HOME в [harness.codex.env].
+# Вход в связке ключей (cli_auth_credentials_store = "keyring") так не работает: нужен
+# auth.json или CODEX_API_KEY в [harness.codex.env].
+# model_instructions_file заменяет встроенный промпт Codex нашим (base_prompt + вариант).
+# model_reasoning_effort = "none" — без рассуждения; если модель его не принимает — "low".
+# Обёртка вместо codex: [harness.codex] executable = "my-codex-wrapper".
+[harness.codex]
+type = "codex"
+executable = "codex"
+model = "gpt-6-luna"
+verify = "warn"
+args = [
+  "exec",
+  "--ephemeral",
+  "--skip-git-repo-check",
+  "--ignore-rules",
+  "--sandbox", "read-only",
+  "--color", "never",
+  "--model", "{model}",
+  "-c", 'model_instructions_file="{prompt_file}"',
+  "-c", 'model_reasoning_effort="none"',
+  "-c", 'model_reasoning_summary="none"',
+  "-",
+]
+text_args = []
+schema_args = ["--output-schema", "{schema_file}"]
+input = "stdin"
+output = "text"
+output_path = ""
+schema_output_path = ""
+
+[harness.codex.env]
 
 # OpenCode: модель в формате "провайдер/модель", например
 # [variants.<номер>] model = "anthropic/claude-haiku-4-5". Системного промпта у

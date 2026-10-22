@@ -50,7 +50,7 @@ func logConfigSummary(_ config: AppConfig) {
         guard let harness = config.harnesses[name] else { continue }
         Log.info("Конфиг: harness \(name) → \(harness.target)" + (harness.model.isEmpty ? "" : ", model=\(harness.model)"), .config)
         switch harness.kind {
-        case .process:
+        case .process, .codex:
             Log.debug("Конфиг: harness \(name): аргументов \(harness.args.count), text_args \(harness.textArgs.count), schema_args \(harness.schemaArgs.count)", .config)
         case .ollama:
             Log.debug("Конфиг: harness \(name): think=\(harness.think.isEmpty ? "—" : harness.think), keep_alive=\(harness.keepAlive.isEmpty ? "—" : harness.keepAlive), options=\(harness.options.count)", .config)
@@ -105,12 +105,16 @@ MainActor.assumeIsolated {
 
     let recognizer = WhisperSpeechRecognizer(settings: config.stt, modelsDirectory: paths.models)
     // Каждый вызов LLM в контексте диктовки (HistoryContext.session) попадает в историю.
+    let process = ProcessLLMRepository(settings: config.llm,
+                                       runDirectory: paths.run,
+                                       defaultWorkdir: paths.llmWorkdir)
+    let codex = CodexLLMRepository(process: process, settings: config.llm, homeDirectory: paths.codexHome,
+                                   checkStateFile: paths.codexCheckFile)
     let llm = HistoryLLMRepository(
         base: RoutingLLMRepository(
-            process: ProcessLLMRepository(settings: config.llm,
-                                          runDirectory: paths.run,
-                                          defaultWorkdir: paths.llmWorkdir),
-            ollama: OllamaLLMRepository(settings: config.llm)
+            process: process,
+            ollama: OllamaLLMRepository(settings: config.llm),
+            codex: codex
         ),
         history: history
     )
@@ -123,6 +127,7 @@ MainActor.assumeIsolated {
         transcribe: TranscribeSpeechUseCase(recognizer: recognizer, config: config),
         format: FormatTextUseCase(llm: llm, config: config),
         prepareLocalLLM: PrepareLocalLLMUseCase(setup: OllamaSetup(), config: config),
+        checkCodex: CheckCodexUseCase(checker: codex.verifier, config: config),
         history: history,
         historyDirectory: historyRoot,
         modelsDirectory: paths.models,
