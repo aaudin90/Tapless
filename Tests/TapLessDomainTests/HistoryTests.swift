@@ -182,7 +182,7 @@ private func calls(_ events: [(event: HistoryEvent, session: UUID)]) -> [LLMCall
         let key = try #require(useCase.variantKeys.first)
         _ = try await useCase.execute(text: "т", variantKey: key)
         _ = try await useCase.revise(transcript: "т", previous: "п", feedback: "ф", key: key)
-        _ = try await useCase.cleanFeedback("з")
+        _ = try await useCase.cleanFeedback("з", key: key)
         try await useCase.warmUp(variantKey: key)
         let purposes = await capture.requests.map(\.purpose)
         #expect(purposes.prefix(3) == [.variant, .revision, .feedback])

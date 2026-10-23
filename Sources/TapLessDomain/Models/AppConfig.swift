@@ -455,7 +455,7 @@ public struct AppConfig: Sendable, Equatable {
     }
 
     /// Harness Codex и модели, которые нужны включённым вариантам и `llm.harness`
-    /// (чистка замечаний и правка сырого текста), без повторов.
+    /// (правка сырого текста и чистка замечаний к нему), без повторов.
     public var codexTargets: [CodexTarget] {
         var uses = activeVariants.map { (harnessName(for: $0), model(for: $0)) }
         let defaultModel = harnesses[llm.harness].map { $0.model.isEmpty ? llm.model : $0.model } ?? llm.model
