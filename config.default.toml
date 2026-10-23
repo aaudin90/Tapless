@@ -291,6 +291,9 @@ feedback_prompt = '''
 # плагины, хуки и MCP пользователя (вход работает как обычно), а --settings '{"language":""}'
 # снимает language из ~/.claude/settings.json: иначе ответ шёл бы на языке настроек,
 # а не диктовки. Остаётся только короткий блок об окружении (папка, ОС, дата).
+# --effort low: без флага уровень рассуждения берётся из ~/.claude/settings.json (effortLevel),
+# а бенчмарк TapLess (README, «Какую модель выбрать») замерен с low. Точнее, но медленнее —
+# "--effort", "high" в своей копии args.
 [harness.claude]
 executable = "claude"
 args = [
@@ -298,6 +301,7 @@ args = [
   "--safe-mode",
   "--settings", '{"language":""}',
   "--model", "{model}",
+  "--effort", "low",
   "--system-prompt-file", "{prompt_file}",
   "--tools", "",
   "--strict-mcp-config",
@@ -324,6 +328,7 @@ executable = "claude"
 args = [
   "--bare", "-p",
   "--model", "{model}",
+  "--effort", "low",
   "--system-prompt-file", "{prompt_file}",
   "--tools", "",
   "--no-session-persistence",

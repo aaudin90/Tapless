@@ -348,7 +348,7 @@ model = "haiku"
 
 `haiku` — быстрая, но ошибается чаще. Точнее и почти не медленнее — `opus` и `sonnet`: по замеру TapLess (судья Opus) критических ошибок у `opus` 0 %, у `sonnet` 2 %, у `haiku` 47 % (таблица — в README, «Какую модель выбрать»). Для них задай `model = "opus"` или `model = "sonnet"`.
 
-Команда `claude` должна работать в Терминале. Пресет запускает `claude -p --safe-mode` с промптом TapLess вместо промпта Claude Code и без инструментов: `~/.claude/CLAUDE.md`, навыки, плагины, хуки и MCP пользователя в запрос не попадают, `language` из `~/.claude/settings.json` снят (`--settings '{"language":""}'`). Если `claude` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
+Команда `claude` должна работать в Терминале. Пресет запускает `claude -p --safe-mode` с промптом TapLess вместо промпта Claude Code и без инструментов: `~/.claude/CLAUDE.md`, навыки, плагины, хуки и MCP пользователя в запрос не попадают, `language` из `~/.claude/settings.json` снят (`--settings '{"language":""}'`), уровень рассуждения — `--effort low` (без флага он брался бы из `effortLevel` в `~/.claude/settings.json`; бенчмарк замерен с `low`). Поднять: скопируй `args` пресета из `config.default.toml` в `[harness.claude]` и поменяй `low` на `high` — массив заменяет дефолт целиком. Если `claude` запускается обёрткой (функция в `~/.zshenv`), переопредели только программу:
 
 ```toml
 [harness.claude]
@@ -358,7 +358,7 @@ executable = "my-claude-wrapper"
 Проверить такой harness без GUI:
 
 ```bash
-echo '<transcript>ну вот короче надо проверить клауд код</transcript>' | zsh -l -c '"$0" "$@"' claude -p --safe-mode --settings '{"language":""}' --model haiku --tools "" --output-format text
+echo '<transcript>ну вот короче надо проверить клауд код</transcript>' | zsh -l -c '"$0" "$@"' claude -p --safe-mode --settings '{"language":""}' --model haiku --effort low --tools "" --output-format text
 ```
 
 ### Переключить все варианты на Codex
