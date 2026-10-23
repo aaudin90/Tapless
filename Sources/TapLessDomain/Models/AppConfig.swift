@@ -15,9 +15,11 @@ public struct GeneralConfig: Sendable, Equatable {
     public var minRecordingMs: Int
     public var tailMs: Int
     public var maxRecordingSeconds: Int
+    /// Раз в сутки проверять новый релиз на GitHub. Пункт меню «Проверить обновления» работает всегда.
+    public var checkUpdates: Bool
 
     public init(hotkey: String, showLastHotkey: String, mode: String, sounds: Bool,
-                minRecordingMs: Int, tailMs: Int, maxRecordingSeconds: Int) {
+                minRecordingMs: Int, tailMs: Int, maxRecordingSeconds: Int, checkUpdates: Bool) {
         self.hotkey = hotkey
         self.showLastHotkey = showLastHotkey
         self.mode = mode
@@ -25,6 +27,7 @@ public struct GeneralConfig: Sendable, Equatable {
         self.minRecordingMs = minRecordingMs
         self.tailMs = tailMs
         self.maxRecordingSeconds = maxRecordingSeconds
+        self.checkUpdates = checkUpdates
     }
 
     public var isHoldMode: Bool { mode.lowercased() == "hold" }

@@ -2,11 +2,11 @@ import Foundation
 import Testing
 @testable import TapLessDomain
 
-private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String = "cli",
+func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String = "cli",
                         llmModel: String = "llm-model", variants: [VariantConfig]) -> AppConfig {
     AppConfig(
         general: GeneralConfig(hotkey: "option+quote", showLastHotkey: "option+semicolon", mode: "toggle", sounds: false,
-                               minRecordingMs: 300, tailMs: 0, maxRecordingSeconds: 60),
+                               minRecordingMs: 300, tailMs: 0, maxRecordingSeconds: 60, checkUpdates: false),
         paste: PasteConfig(autoPaste: true, restoreClipboard: true, pasteDelayMs: 0, restoreDelayMs: 0),
         ui: UIConfig(position: "top", width: 400, maxLines: 5, showRaw: true),
         stt: STTConfig(model: "m", modelPath: "", modelRepo: "", language: "ru",

@@ -16,6 +16,7 @@ struct AppDependencies {
     let format: FormatTextUseCase
     let prepareLocalLLM: PrepareLocalLLMUseCase
     let checkCodex: CheckCodexUseCase
+    let checkUpdate: CheckUpdateUseCase
     /// История диктовок (`[history]`). Тот же экземпляр пишет вызовы LLM через `HistoryLLMRepository`.
     let history: DictationHistoryUseCase
     /// Папка истории: открывается из меню.
@@ -42,6 +43,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let format: FormatTextUseCase
     private let prepareLocalLLM: PrepareLocalLLMUseCase
     private let checkCodex: CheckCodexUseCase
+    private let updates: UpdateController
     private let history: DictationHistoryUseCase
     private let historyDirectory: URL
     private let modelsDirectory: URL
@@ -100,8 +102,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var codexCheckTask: Task<Void, Never>?
     /// О каких итогах (`codexReportID`) уже предупредили: одно предупреждение на проверку.
     private var codexWarned: Set<String> = []
-    /// Предупреждение, которое покажется строкой в панели при следующей диктовке.
-    private var pendingCodexWarning: String?
+    /// Предупреждение Codex или уведомление об обновлении: покажется строкой в панели при следующей диктовке.
+    private var pendingNote: String?
 
     init(_ deps: AppDependencies) {
         config = deps.config
@@ -112,6 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         format = deps.format
         prepareLocalLLM = deps.prepareLocalLLM
         checkCodex = deps.checkCodex
+        updates = UpdateController(update: deps.checkUpdate)
         history = deps.history
         historyDirectory = deps.historyDirectory
         modelsDirectory = deps.modelsDirectory
@@ -158,6 +161,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startLocalLLMSetup(reason: "запуск приложения")
         startCodexCheck(force: false, reason: "запуск приложения")
         pruneHistory(reason: "запуск приложения")
+        startUpdates()
 
         if let configError {
             showAlert(title: "Ошибка в конфиге TapLess",
@@ -176,6 +180,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cancelWarmUp()
         localLLMTask?.cancel()
         codexCheckTask?.cancel()
+        updates.stop()
         _ = recorder.stop()
         Log.info("TapLess завершён", .app)
     }
@@ -609,9 +614,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.variants = initialVariantStates()
         if localLLMStatus != .notUsed && localLLMStatus != .ready {
             model.note = "Ollama: \(localLLMStatus.text)"
-        } else if let warning = pendingCodexWarning {
+        } else if let warning = pendingNote {
             model.note = "⚠︎ \(warning)"
-            pendingCodexWarning = nil
+            pendingNote = nil
         }
         updateStatusIcon()
 
@@ -1377,8 +1382,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if state == .idle || state == .message {
             showMessage(report.text, seconds: manual ? 4 : 8)
         } else if case .problems = report.status {
-            pendingCodexWarning = report.text
+            pendingNote = report.text
         }
+    }
+
+    // MARK: - Обновления
+
+    private func startUpdates() {
+        updates.canInstall = { [weak self] in
+            guard let self else { return false }
+            return self.state == .idle || self.state == .message || self.state == .results
+        }
+        updates.notify = { [weak self] text in
+            guard let self else { return }
+            if self.state == .idle || self.state == .message {
+                self.showMessage(text, seconds: 8)
+            } else {
+                self.pendingNote = text
+            }
+        }
+        updates.start()
     }
 
     // MARK: - Разрешения
@@ -1512,6 +1535,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         action("Открыть лог", #selector(openLogAction))
         menu.addItem(.separator())
 
+        updates.menuItems().forEach(menu.addItem)
         action("Запускать при входе", #selector(toggleLoginItemAction),
                checked: SMAppService.mainApp.status == .enabled)
         action("Выйти", #selector(quitAction))
