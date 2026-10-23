@@ -35,12 +35,17 @@ public struct PasteConfig: Sendable, Equatable {
     public var restoreClipboard: Bool
     public var pasteDelayMs: Int
     public var restoreDelayMs: Int
+    /// Автовставка: клавиша строки панели, которая вставляется сама, когда готова.
+    /// Остальные варианты не запускаются. 0 — выключено, выбор цифрой.
+    public var autoSelect: Int
 
-    public init(autoPaste: Bool, restoreClipboard: Bool, pasteDelayMs: Int, restoreDelayMs: Int) {
+    public init(autoPaste: Bool, restoreClipboard: Bool, pasteDelayMs: Int, restoreDelayMs: Int,
+                autoSelect: Int = 0) {
         self.autoPaste = autoPaste
         self.restoreClipboard = restoreClipboard
         self.pasteDelayMs = pasteDelayMs
         self.restoreDelayMs = restoreDelayMs
+        self.autoSelect = autoSelect
     }
 }
 
@@ -388,6 +393,35 @@ public struct AppConfig: Sendable, Equatable {
         Array(variants.filter(\.enabled).prefix(maxVariants))
     }
 
+    /// Клавиши включённых вариантов по порядку.
+    public var variantKeys: [Int] {
+        activeVariants.indices.map { firstVariantKey + $0 }
+    }
+
+    /// Клавиши строк панели: сырой текст (если есть) и включённые варианты.
+    public var panelKeys: [Int] {
+        (rawTextKey.map { [$0] } ?? []) + variantKeys
+    }
+
+    /// Клавиша автовставки из `paste.auto_select`; nil — выключено или такой строки нет.
+    public var autoSelectKey: Int? {
+        validAutoSelectKey(paste.autoSelect)
+    }
+
+    /// `value`, если это клавиша строки панели (сырой текст или включённый вариант); иначе nil.
+    /// 0 — автовставка выключена.
+    public func validAutoSelectKey(_ value: Int) -> Int? {
+        value != 0 && panelKeys.contains(value) ? value : nil
+    }
+
+    /// Клавиши вариантов, которые запускаются на диктовку: все включённые; при автовставке
+    /// `autoSelectKey` — только её вариант, при автовставке сырого текста — ни одного.
+    /// Автовставку меняют из меню на ходу, поэтому клавиша — параметр, а не `paste.auto_select`.
+    public func runVariantKeys(autoSelectKey: Int?) -> [Int] {
+        guard let key = autoSelectKey else { return variantKeys }
+        return variantKeys.contains(key) ? [key] : []
+    }
+
     /// Harness варианта: свой или `llm.harness`.
     public func harnessName(for variant: VariantConfig) -> String {
         variant.harness ?? llm.harness
@@ -403,6 +437,7 @@ public struct AppConfig: Sendable, Equatable {
     }
 
     /// Серверы Ollama и модели, которые нужны включённым вариантам, без повторов, в порядке вариантов.
+    /// Автовставку не учитывает: её меняют на ходу, а подготовка идёт при запуске.
     public var ollamaTargets: [OllamaTarget] {
         var targets: [OllamaTarget] = []
         for variant in activeVariants {

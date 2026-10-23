@@ -26,4 +26,8 @@ public protocol ConfigRepository: Sendable {
     /// Записывает файл-шаблон, если файла ещё нет. Возвращает true, если записал.
     @discardableResult
     func saveTemplateIfMissing() throws -> Bool
+
+    /// Записывает в файл одно целое значение `[table] key = value` (настройка из меню).
+    /// Остальной файл, комментарии и порядок строк не меняются. Не вышло — файл не тронут.
+    func setInteger(_ value: Int, forKey key: String, inTable table: String) throws
 }

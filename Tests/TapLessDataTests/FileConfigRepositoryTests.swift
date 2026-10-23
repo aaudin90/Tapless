@@ -45,7 +45,65 @@ import TapLessDomain
         #expect(config.log.logLevel == .debug)
         #expect(!config.log.includeText)
         #expect(config.activeVariants.map(\.name) == ["Как сказал", "Деловое сообщение"])
+        #expect(config.paste.autoSelect == 0)
+        #expect(config.autoSelectKey == nil)
+        #expect(config.runVariantKeys(autoSelectKey: nil) == [2, 3])
         #expect(config.dictionary.terms["Claude Code"]?.contains("клауд код") == true)
+    }
+
+    @Test func setIntegerReplacesValueAndKeepsComments() throws {
+        let repository = try makeRepository("""
+        # шапка
+        [paste]
+        restore_clipboard = false
+        auto_select = 3   # из меню
+
+        [ui]
+        auto_select_note = 1
+        """)
+        try repository.setInteger(2, forKey: "auto_select", inTable: "paste")
+        let text = try String(contentsOf: repository.fileURL, encoding: .utf8)
+        #expect(text == """
+        # шапка
+        [paste]
+        restore_clipboard = false
+        auto_select = 2   # из меню
+
+        [ui]
+        auto_select_note = 1
+        """)
+    }
+
+    @Test func setIntegerAddsKeyAndTable() throws {
+        let withTable = try makeRepository("[paste] # вставка\nrestore_clipboard = false\n\n[ui]\nwidth = 700\n")
+        try withTable.setInteger(2, forKey: "auto_select", inTable: "paste")
+        #expect(try String(contentsOf: withTable.fileURL, encoding: .utf8)
+                == "[paste] # вставка\nauto_select = 2\nrestore_clipboard = false\n\n[ui]\nwidth = 700\n")
+        #expect(try withTable.load().config.autoSelectKey == 2)
+
+        // Ключ в другой таблице и закомментированный ключ не трогаем: [paste] дописывается в конец.
+        let withoutTable = try makeRepository("[ui]\nwidth = 700\n# [paste]\n# auto_select = 0\n\n")
+        try withoutTable.setInteger(3, forKey: "auto_select", inTable: "paste")
+        #expect(try String(contentsOf: withoutTable.fileURL, encoding: .utf8)
+                == "[ui]\nwidth = 700\n# [paste]\n# auto_select = 0\n\n[paste]\nauto_select = 3\n")
+        #expect(try withoutTable.load().config.paste.autoSelect == 3)
+    }
+
+    @Test func setIntegerCreatesTemplateWhenFileIsMissing() throws {
+        let repository = try makeRepository(nil)
+        try repository.setInteger(2, forKey: "auto_select", inTable: "paste")
+        let loaded = try repository.load()
+        #expect(loaded.config.autoSelectKey == 2)
+        #expect(loaded.warnings.isEmpty)
+    }
+
+    @Test func setIntegerLeavesFileWhenResultIsWrong() throws {
+        let original = "paste = { auto_paste = true }\n"
+        let repository = try makeRepository(original)
+        #expect(throws: ConfigError.self) {
+            try repository.setInteger(2, forKey: "auto_select", inTable: "paste")
+        }
+        #expect(try String(contentsOf: repository.fileURL, encoding: .utf8) == original)
     }
 
     @Test func missingFileGivesDefaults() throws {

@@ -74,6 +74,27 @@ public struct FileConfigRepository: ConfigRepository {
         return true
     }
 
+    public func setInteger(_ value: Int, forKey key: String, inTable table: String) throws {
+        try saveTemplateIfMissing()
+        let text: String
+        do {
+            text = try String(contentsOf: fileURL, encoding: .utf8)
+        } catch {
+            throw ConfigError.io(error.localizedDescription)
+        }
+        let updated = TOMLLineEditor.setValue(String(value), forKey: key, inTable: table, in: text)
+        // Правка строк не понимает всего TOML (например, inline-таблицы): проверяем итог разбором.
+        let parsed = try Self.table(fromTOML: updated)
+        guard (parsed[table] as? [String: Any])?[key] as? Int == value else {
+            throw ConfigError.schema("не удалось записать \(table).\(key) = \(value): поправьте файл вручную")
+        }
+        do {
+            try updated.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw ConfigError.io(error.localizedDescription)
+        }
+    }
+
     // MARK: - Разбор
 
     private static func defaultTable() -> [String: Any] {

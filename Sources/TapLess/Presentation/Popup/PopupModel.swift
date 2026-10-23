@@ -87,6 +87,9 @@ final class PopupModel: ObservableObject {
 
     /// Клавиша строки «Как распознано» (сырой текст); nil — строки нет.
     var rawKey: Int? = 1
+    /// Автовставка (`paste.auto_select`): клавиша и имя строки; nil — выбор цифрой.
+    var autoKey: Int?
+    var autoName = ""
     var maxLines = 7
     var width: CGFloat = 640
 
@@ -126,6 +129,11 @@ final class PopupModel: ObservableObject {
         editingKey = nil
         feedback = ""
         feedbackPhase = .idle
+    }
+
+    /// Автовставка ждёт свою строку: другую цифру не нажимали, вставка не сорвалась.
+    var isAutoPending: Bool {
+        autoKey != nil && pendingKey == autoKey
     }
 
     /// Статус строки сырого текста с учётом правки.
