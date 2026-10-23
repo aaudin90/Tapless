@@ -128,6 +128,12 @@ MainActor.assumeIsolated {
         format: FormatTextUseCase(llm: llm, config: config),
         prepareLocalLLM: PrepareLocalLLMUseCase(setup: OllamaSetup(), config: config),
         checkCodex: CheckCodexUseCase(checker: codex.verifier, config: config),
+        checkUpdate: CheckUpdateUseCase(
+            updater: GitHubUpdater(),
+            currentVersion: Bundle.main.bundleURL.pathExtension == "app"
+                ? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String : nil,
+            config: config
+        ),
         history: history,
         historyDirectory: historyRoot,
         modelsDirectory: paths.models,

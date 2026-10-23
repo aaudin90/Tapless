@@ -28,6 +28,7 @@ struct ConfigDTO: Decodable {
         let minRecordingMs: Int
         let tailMs: Int
         let maxRecordingSeconds: Int
+        let checkUpdates: Bool
 
         enum CodingKeys: String, CodingKey {
             case hotkey, mode, sounds
@@ -35,6 +36,7 @@ struct ConfigDTO: Decodable {
             case minRecordingMs = "min_recording_ms"
             case tailMs = "tail_ms"
             case maxRecordingSeconds = "max_recording_seconds"
+            case checkUpdates = "check_updates"
         }
     }
 
@@ -244,7 +246,8 @@ struct ConfigDTO: Decodable {
                 sounds: general.sounds,
                 minRecordingMs: general.minRecordingMs,
                 tailMs: general.tailMs,
-                maxRecordingSeconds: general.maxRecordingSeconds
+                maxRecordingSeconds: general.maxRecordingSeconds,
+                checkUpdates: general.checkUpdates
             ),
             paste: PasteConfig(
                 autoPaste: paste.autoPaste,
