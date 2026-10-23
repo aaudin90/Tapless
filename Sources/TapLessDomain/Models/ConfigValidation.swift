@@ -40,6 +40,12 @@ extension AppConfig {
             }
         }
 
+        if paste.autoSelect != 0 && autoSelectKey == nil {
+            let keys = panelKeys
+            let range = keys.isEmpty ? "строк нет" : "есть \(keys.min() ?? 0)–\(keys.max() ?? 0)"
+            warnings.append("paste.auto_select = \(paste.autoSelect): нет строки панели с такой клавишей (\(range)) — автовставка выключена.")
+        }
+
         if LogLevel(name: log.level) == nil {
             warnings.append("log.level = \"\(log.level)\": ожидается \"debug\", \"info\", \"warning\" или \"error\" — используется \"debug\".")
         }

@@ -43,12 +43,14 @@ struct ConfigDTO: Decodable {
         let restoreClipboard: Bool
         let pasteDelayMs: Int
         let restoreDelayMs: Int
+        let autoSelect: Int
 
         enum CodingKeys: String, CodingKey {
             case autoPaste = "auto_paste"
             case restoreClipboard = "restore_clipboard"
             case pasteDelayMs = "paste_delay_ms"
             case restoreDelayMs = "restore_delay_ms"
+            case autoSelect = "auto_select"
         }
     }
 
@@ -248,7 +250,8 @@ struct ConfigDTO: Decodable {
                 autoPaste: paste.autoPaste,
                 restoreClipboard: paste.restoreClipboard,
                 pasteDelayMs: paste.pasteDelayMs,
-                restoreDelayMs: paste.restoreDelayMs
+                restoreDelayMs: paste.restoreDelayMs,
+                autoSelect: paste.autoSelect
             ),
             ui: UIConfig(
                 position: ui.position,

@@ -154,6 +154,60 @@ private func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String =
         #expect(config.codexTargets.first?.harness.verify == .warn)
     }
 
+    @Test func autoSelectKeyFollowsPanelKeys() {
+        let variants = [
+            VariantConfig(name: "a", prompt: "p"),
+            VariantConfig(name: "off", prompt: "p", enabled: false),
+            VariantConfig(name: "b", prompt: "p"),
+        ]
+        var config = makeConfig(harnesses: ["cli": cli], variants: variants)
+        #expect(config.panelKeys == [1, 2, 3])
+        #expect(config.autoSelectKey == nil)
+        #expect(config.runVariantKeys(autoSelectKey: nil) == [2, 3])
+
+        config.paste.autoSelect = 3
+        #expect(config.autoSelectKey == 3)
+        #expect(config.runVariantKeys(autoSelectKey: 3) == [3])
+        #expect(!config.validationWarnings.contains { $0.contains("auto_select") })
+
+        config.paste.autoSelect = 1
+        #expect(config.autoSelectKey == 1)
+        #expect(config.runVariantKeys(autoSelectKey: 1).isEmpty)
+
+        // Без строки сырого текста клавиша 1 — первый вариант.
+        config.ui.showRaw = false
+        #expect(config.panelKeys == [1, 2])
+        #expect(config.autoSelectKey == 1)
+        #expect(config.runVariantKeys(autoSelectKey: 1) == [1])
+        #expect(config.validAutoSelectKey(3) == nil)
+    }
+
+    @Test func unknownAutoSelectKeyWarns() {
+        var config = makeConfig(harnesses: ["cli": cli], variants: [VariantConfig(name: "a", prompt: "p")])
+        config.paste.autoSelect = 4
+        #expect(config.autoSelectKey == nil)
+        #expect(config.validationWarnings.contains { $0.contains("paste.auto_select = 4") && $0.contains("1–2") })
+
+        config.paste.autoSelect = -1
+        #expect(config.autoSelectKey == nil)
+        #expect(config.validationWarnings.contains { $0.contains("paste.auto_select = -1") })
+    }
+
+    @Test func autoSelectDoesNotLimitSetupTargets() {
+        // Автовставку меняют из меню на ходу: Ollama и Codex готовятся для всех включённых вариантов.
+        let harnesses: [String: HarnessConfig] = [
+            "cli": cli,
+            "oll": .ollama(url: "http://127.0.0.1:11434", model: "gemma"),
+        ]
+        let variants = [
+            VariantConfig(name: "a", prompt: "p", harness: "oll"),
+            VariantConfig(name: "b", prompt: "p", model: "qwen", harness: "oll"),
+        ]
+        var config = makeConfig(harnesses: harnesses, variants: variants)
+        config.paste.autoSelect = 3
+        #expect(config.ollamaTargets.map(\.model) == ["gemma", "qwen"])
+    }
+
     @Test func codexReportText() {
         let target = CodexTarget(harnessName: "codex", harness: HarnessConfig(executable: "codex", args: []), model: "m")
         let report = CodexCheckReport(target: target, version: "codex-cli 1.0", status: .problems(["a", "b"]),

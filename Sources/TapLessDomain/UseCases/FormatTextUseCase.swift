@@ -50,7 +50,13 @@ public struct FormatTextUseCase: Sendable {
 
     /// Клавиши включённых вариантов по порядку.
     public var variantKeys: [Int] {
-        variants.indices.map { firstVariantKey + $0 }
+        config.variantKeys
+    }
+
+    /// Клавиши вариантов, которые запускаются на диктовку: при автовставке `autoSelectKey`
+    /// только её вариант, остальные не тратят токены и время.
+    public func runKeys(autoSelectKey: Int?) -> [Int] {
+        config.runVariantKeys(autoSelectKey: autoSelectKey)
     }
 
     /// Вариант с клавишей `key`; nil — такой клавиши нет.
@@ -69,9 +75,9 @@ public struct FormatTextUseCase: Sendable {
         harnessName(forVariantKey: key).flatMap { harnesses[$0]?.kind }
     }
 
-    /// Клавиши вариантов, которые идут через Ollama: их промпт имеет смысл прогревать.
-    public var warmUpKeys: [Int] {
-        variantKeys.filter { harnessKind(forVariantKey: $0) == .ollama }
+    /// Клавиши запускаемых вариантов, которые идут через Ollama: их промпт имеет смысл прогревать.
+    public func warmUpKeys(autoSelectKey: Int?) -> [Int] {
+        runKeys(autoSelectKey: autoSelectKey).filter { harnessKind(forVariantKey: $0) == .ollama }
     }
 
     /// Оформляет текст вариантом с клавишей `key` (`firstVariantKey`…9).

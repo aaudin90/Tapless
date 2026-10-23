@@ -303,7 +303,7 @@ private actor RecordingSetup: LocalLLMSetup {
         config.variants[0].schema = "text"
         let llm = RecordingLLM(reply: "")
         let useCase = FormatTextUseCase(llm: llm, config: config)
-        #expect(useCase.warmUpKeys == [2, 3])
+        #expect(useCase.warmUpKeys(autoSelectKey: nil) == [2, 3])
 
         try await useCase.warmUp(variantKey: 2)
         _ = try? await useCase.execute(text: "привет", variantKey: 2)
@@ -326,10 +326,23 @@ private actor RecordingSetup: LocalLLMSetup {
         config.variants[0].harness = "fast"
         let llm = RecordingLLM(reply: "")
         let useCase = FormatTextUseCase(llm: llm, config: config)
-        #expect(useCase.warmUpKeys == [3])
+        #expect(useCase.warmUpKeys(autoSelectKey: nil) == [3])
 
         try await useCase.warmUp(variantKey: 2)
         #expect(await llm.requests.isEmpty)
+    }
+
+    @Test func autoSelectRunsAndWarmsOnlyItsVariant() {
+        let useCase = FormatTextUseCase(llm: RecordingLLM(reply: ""), config: defaultConfig())
+        #expect(useCase.variantKeys == [2, 3])
+        #expect(useCase.runKeys(autoSelectKey: nil) == [2, 3])
+        #expect(useCase.runKeys(autoSelectKey: 3) == [3])
+        #expect(useCase.warmUpKeys(autoSelectKey: 3) == [3])
+        #expect(useCase.warmUpKeys(autoSelectKey: nil) == [2, 3])
+
+        // Автовставка сырого текста: ИИ не нужен ни одному варианту.
+        #expect(useCase.runKeys(autoSelectKey: 1).isEmpty)
+        #expect(useCase.warmUpKeys(autoSelectKey: 1).isEmpty)
     }
 }
 

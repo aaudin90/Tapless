@@ -133,11 +133,17 @@ struct PopupView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .monospacedDigit()
                 }
+                if let key = model.autoKey {
+                    AutoSelectBadge(key: key, name: model.autoName)
+                }
                 Spacer(minLength: 8)
                 LevelMeter(levels: model.levels)
             case .transcribing:
                 ProgressView().controlSize(.small)
                 Text("Распознаю…").font(.system(size: 14, weight: .semibold))
+                if model.isAutoPending, let key = model.autoKey {
+                    AutoSelectBadge(key: key, name: model.autoName)
+                }
                 Spacer()
             case .results:
                 if let key = model.editingKey {
@@ -145,6 +151,12 @@ struct PopupView: View {
                         .foregroundStyle(.secondary)
                     Text("Правка строки \(key): напишите или надиктуйте замечания")
                         .font(.system(size: 14, weight: .semibold))
+                } else if model.isAutoPending {
+                    Image(systemName: "bolt.fill")
+                        .foregroundStyle(Color.accentColor)
+                    Text("Вставлю автоматически: «\(model.autoName)»")
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
                 } else {
                     Image(systemName: "text.badge.checkmark")
                         .foregroundStyle(.secondary)
@@ -218,7 +230,8 @@ struct PopupView: View {
             let keys = (model.rawKey.map { [$0] } ?? []) + model.variants.map(\.id)
             var parts: [String] = []
             if let first = keys.min(), let last = keys.max() {
-                parts.append(first == last ? "\(first) — вставить" : "\(first)–\(last) — вставить")
+                let range = first == last ? "\(first)" : "\(first)–\(last)"
+                parts.append(model.isAutoPending ? "\(range) — вставить другую строку" : "\(range) — вставить")
                 parts.append("⇧+цифра — только копировать")
                 if model.phase == .results {
                     parts.append("⌥+цифра — править")
@@ -227,7 +240,7 @@ struct PopupView: View {
                     }
                 }
             }
-            parts.append("Esc — закрыть")
+            parts.append(model.isAutoPending ? "Esc — отменить вставку" : "Esc — закрыть")
             return parts.joined(separator: " · ")
         case .message:
             return "Esc — закрыть"
@@ -246,6 +259,25 @@ private extension VariantState.Status {
     var isDone: Bool {
         if case .done = self { return true }
         return false
+    }
+}
+
+/// Метка в заголовке: строка `key` вставится сама, без выбора цифрой (`paste.auto_select`).
+private struct AutoSelectBadge: View {
+    let key: Int
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "bolt.fill")
+            Text("Автовставка \(key)")
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 8)
+        .frame(height: 20)
+        .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+        .help("Вставлю «\(name)» автоматически, когда будет готово")
     }
 }
 

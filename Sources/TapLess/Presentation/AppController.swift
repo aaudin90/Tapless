@@ -66,6 +66,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var jobs: [Task<Void, Never>] = []
     private var pendingCopyOnly = false
     private var hasResults = false
+    /// Автовставка: клавиша строки, которая вставляется сама; nil — выбор цифрой.
+    /// Начальное значение — `paste.auto_select`, меняется из меню без перезапуска.
+    private var autoSelectKey: Int?
     /// Правки строк по клавишам: новая правка той же строки отменяет прежнюю.
     private var revisionJobs: [Int: Task<Void, Never>] = [:]
     /// Распознавание замечания. Как и `transcribeTask`, живёт, пока Whisper занят.
@@ -113,6 +116,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         historyDirectory = deps.historyDirectory
         modelsDirectory = deps.modelsDirectory
         logFile = deps.logFile
+        autoSelectKey = deps.config.autoSelectKey
         super.init()
     }
 
@@ -197,6 +201,41 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.maxLines = max(1, config.ui.maxLines)
         model.width = CGFloat(max(420, min(1200, config.ui.width)))
         popup.position = config.ui.position
+        applyAutoSelect()
+    }
+
+    private func applyAutoSelect() {
+        model.autoKey = autoSelectKey
+        model.autoName = autoSelectKey.map(rowName) ?? ""
+    }
+
+    /// Имя строки панели с клавишей `key`.
+    private func rowName(_ key: Int) -> String {
+        key == config.rawTextKey ? "Как распознано" : format.variant(forKey: key)?.name ?? ""
+    }
+
+    /// Имя строки автовставки; nil — автовставка выключена.
+    private var autoSelectName: String? {
+        autoSelectKey.map(rowName)
+    }
+
+    /// Меню → «Автовставка»: меняет строку сразу (со следующей диктовки) и пишет `paste.auto_select` в файл,
+    /// чтобы выбор пережил перезапуск. Файл не записался — выбор действует до перезапуска.
+    private func setAutoSelect(_ key: Int?) {
+        guard key != autoSelectKey else { return }
+        Log.info("Меню: Автовставка — \(key.map { "строка \($0) «\(rowName($0))»" } ?? "выключена")", .app)
+        autoSelectKey = key
+        applyAutoSelect()
+        // При автовставке прогревался только её вариант: прогреваем те, что теперь пойдут в работу.
+        if localLLMStatus == .ready { warmUpLocalLLM() }
+        do {
+            try configRepository.setInteger(key ?? 0, forKey: "auto_select", inTable: "paste")
+            Log.info("Автовставка записана в \(configRepository.fileURL.path): paste.auto_select = \(key ?? 0)", .config)
+        } catch {
+            Log.error("Не удалось записать paste.auto_select: \(error.localizedDescription)", .config)
+            showAlert(title: "Автовставка не сохранена",
+                      text: "Выбор действует до перезапуска TapLess. Не удалось записать paste.auto_select в \(configPathDisplay): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Горячие клавиши
@@ -332,7 +371,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         guard withSelection else { return }
 
-        let keys = (model.rawKey.map { [$0] } ?? []) + format.variantKeys
+        // Только строки панели: при автовставке остальные варианты не запускались,
+        // и их цифры не должны пропадать в других приложениях.
+        let keys = (model.rawKey.map { [$0] } ?? []) + model.variants.map(\.id)
         let shift = UInt32(shiftKey)
         let option = UInt32(optionKey)
         for key in keys {
@@ -437,6 +478,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.phase = .transcribing
         // Строки вариантов показываем сразу — можно заранее нажать цифру.
         model.variants = initialVariantStates()
+        // Автовставка — отложенный выбор своей строки: вставится в finishVariant, как только будет готова.
+        if let key = autoSelectKey {
+            Log.info("\(tag(session)) Автовставка: строка \(key) «\(autoSelectName ?? "")»", .ui)
+            model.pendingKey = key
+            pendingCopyOnly = false
+        }
         registerSessionKeys(withSelection: true)
         playSound("Pop")
         updateStatusIcon()
@@ -540,17 +587,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - LLM-варианты
 
+    /// Строки запускаемых вариантов: при автовставке — только её вариант.
     private func initialVariantStates() -> [VariantState] {
-        zip(format.variantKeys, format.variants).map {
-            VariantState(id: $0.0, name: $0.1.name, status: .running, seconds: nil)
+        format.runKeys(autoSelectKey: autoSelectKey).compactMap { key in
+            format.variant(forKey: key).map { VariantState(id: key, name: $0.name, status: .running, seconds: nil) }
         }
     }
 
     private func startVariants(for text: String, session sid: UUID) {
-        Log.info("\(tag(sid)) Запуск вариантов: \(format.variants.count)", .llm)
-        for (key, variant) in zip(format.variantKeys, format.variants) {
+        let keys = format.runKeys(autoSelectKey: autoSelectKey)
+        let skipped = format.variants.count - keys.count
+        Log.info("\(tag(sid)) Запуск вариантов: \(keys.count)" + (skipped > 0 ? ", пропущено автовставкой: \(skipped)" : ""), .llm)
+        for key in keys {
             let harness = format.harnessName(forVariantKey: key) ?? "—"
-            Log.info("\(tag(sid)) Вариант \(key) «\(variant.name)»: harness=\(harness)", .llm)
+            Log.info("\(tag(sid)) Вариант \(key) «\(format.variant(forKey: key)?.name ?? "")»: harness=\(harness)", .llm)
         }
         state = .results
         hasResults = true
@@ -567,7 +617,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Прогрев делит с вариантами GPU и очередь harness — диктовка важнее.
         cancelWarmUp()
-        for key in format.variantKeys {
+        for key in keys {
             runVariant(key: key, text: text, session: sid)
         }
 
@@ -622,6 +672,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             select(key, copyOnly: pendingCopyOnly)
         case .failed:
             Log.info("\(tag(sid)) Отложенный выбор \(key) сброшен: вариант не удался", .ui)
+            if model.isAutoPending {
+                model.note = "Автовставка не удалась — выберите строку цифрой или закройте панель (Esc)."
+            }
             model.pendingKey = nil
             NSSound.beep()
         case .running:
@@ -1039,7 +1092,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .copied:
                 self.showMessage("Скопировано в буфер обмена.", seconds: 1.5)
             case .copiedNeedsAccessibility:
-                self.showMessage("Скопировано. Для автовставки разрешите TapLess «Универсальный доступ» и вставьте ⌘V.",
+                self.showMessage("Скопировано. Для вставки в окно разрешите TapLess «Универсальный доступ» и вставьте ⌘V.",
                                  seconds: 6)
                 Paster.requestAccessibility()
             }
@@ -1228,7 +1281,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Отправляет в Ollama системные промпты вариантов, чтобы первая диктовка взяла их из кэша
     /// сервера: иначе промпт со словарём разбирается заново (секунды). Ошибки только в лог.
     private func warmUpLocalLLM() {
-        let keys = format.warmUpKeys
+        let keys = format.warmUpKeys(autoSelectKey: autoSelectKey)
         guard !keys.isEmpty, warmUpTask == nil else { return }
         // Пока идут варианты, прогрев только отнимет у них время.
         let rowsRunning = model.variants.contains { $0.status == .running } || model.rawRevision == .running
@@ -1348,7 +1401,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         if config.paste.autoPaste && !Paster.isTrusted {
-            Log.warning("Автовставка включена, но нет «Универсального доступа» — запрашиваю", .app)
+            Log.warning("Вставка в окно (paste.auto_paste) включена, но нет «Универсального доступа» — запрашиваю", .app)
             Paster.requestAccessibility()
         }
     }
@@ -1438,7 +1491,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let hotkeyError { info("⚠︎ \(hotkeyError)") }
         if let showLastHotkeyError { info("⚠︎ \(showLastHotkeyError)") }
         if config.paste.autoPaste && !Paster.isTrusted {
-            action("⚠︎ Разрешить автовставку (Универсальный доступ)…", #selector(grantAccessibilityAction))
+            action("⚠︎ Разрешить вставку (Универсальный доступ)…", #selector(grantAccessibilityAction))
         }
         menu.addItem(.separator())
 
@@ -1447,6 +1500,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         action(showLastHotkeyDisplay.isEmpty ? "Показать последний результат" : "Показать последний результат (\(showLastHotkeyDisplay))",
                #selector(showLastResultAction),
                enabled: hasResults && state != .recording && state != .transcribing && state != .editing)
+        menu.addItem(autoSelectMenuItem())
         menu.addItem(.separator())
 
         action("Открыть конфиг…", #selector(openConfigAction))
@@ -1460,6 +1514,35 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         action("Запускать при входе", #selector(toggleLoginItemAction),
                checked: SMAppService.mainApp.status == .enabled)
         action("Выйти", #selector(quitAction))
+    }
+
+    /// Подменю «Автовставка»: «Выключена» и строки панели, галочка — на текущей.
+    private func autoSelectMenuItem() -> NSMenuItem {
+        let title = autoSelectKey.map { "Автовставка: \($0) «\(rowName($0))»" } ?? "Автовставка: выключена"
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        func choice(_ title: String, _ key: Int?) {
+            let entry = NSMenuItem(title: title, action: #selector(autoSelectAction(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = key ?? 0
+            entry.state = key == autoSelectKey ? .on : .off
+            submenu.addItem(entry)
+        }
+        choice("Выключена — выбирать цифрой", nil)
+        submenu.addItem(.separator())
+        for key in config.panelKeys {
+            choice("\(key) — \(rowName(key))", key)
+        }
+        submenu.addItem(.separator())
+        let note = NSMenuItem(title: "Остальные варианты не запускаются", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        submenu.addItem(note)
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func autoSelectAction(_ sender: NSMenuItem) {
+        setAutoSelect(sender.tag == 0 ? nil : sender.tag)
     }
 
     @objc private func toggleRecordingAction() {
@@ -1563,7 +1646,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func grantAccessibilityAction() {
-        Log.info("Меню: Разрешить автовставку", .app)
+        Log.info("Меню: Разрешить вставку", .app)
         Paster.requestAccessibility()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)

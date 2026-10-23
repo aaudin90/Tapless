@@ -62,7 +62,7 @@ func logConfigSummary(_ config: AppConfig) {
     for (index, variant) in config.activeVariants.enumerated() {
         Log.info("Конфиг: вариант \(config.firstVariantKey + index) «\(variant.name)» model=\(config.model(for: variant)), harness=\(config.harnessName(for: variant)), schema=\(variant.schema ?? "—")", .config)
     }
-    Log.info("Конфиг: paste auto_paste=\(config.paste.autoPaste), restore_clipboard=\(config.paste.restoreClipboard)", .config)
+    Log.info("Конфиг: paste auto_paste=\(config.paste.autoPaste), restore_clipboard=\(config.paste.restoreClipboard), auto_select=\(config.autoSelectKey.map(String.init) ?? "выключено")", .config)
     Log.info("Конфиг: log level=\(config.log.level), include_text=\(config.log.includeText)", .config)
 }
 
