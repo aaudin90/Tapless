@@ -133,17 +133,15 @@ public struct FormatTextUseCase: Sendable {
         !settings.feedbackPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Тип harness чистки замечаний (`llm.harness`); nil — такого harness нет.
-    public var feedbackHarnessKind: HarnessKind? {
-        harnesses[settings.harness]?.kind
-    }
-
-    /// Чистит надиктованные замечания: ошибки распознавания, термины по словарю, пунктуация.
-    /// Пустой `llm.feedback_prompt` — возвращает текст как есть, без LLM.
-    public func cleanFeedback(_ text: String) async throws -> String {
+    /// Чистит надиктованные замечания к строке `key`: ошибки распознавания, термины по словарю, пунктуация.
+    /// Harness и модель — той же строки (`harnessKind(forRevisionKey:)`), но без промпта и схемы варианта;
+    /// для сырого текста — `llm.harness`. Пустой `llm.feedback_prompt` — возвращает текст как есть, без LLM.
+    public func cleanFeedback(_ text: String, key: Int) async throws -> String {
         guard cleansFeedback else { return text }
+        var variant = variant(forKey: key)
+        variant?.schema = nil
         let request = try buildRequest(
-            key: Self.feedbackKey, variant: nil, nameSuffix: "", name: "Замечание",
+            key: Self.feedbackKey, variant: variant, nameSuffix: "", name: "Замечание",
             taskPrompt: settings.feedbackPrompt, revisePrompt: nil,
             input: TextTools.fill(settings.inputTemplate, ["text": text]), purpose: .feedback)
         let output = try await llm.complete(request)
@@ -173,6 +171,7 @@ public struct FormatTextUseCase: Sendable {
     }
 
     /// Общая сборка запроса. `variant == nil` — сырой текст: harness и модель из `llm`, без схемы.
+    /// Промпт варианта сюда не берётся: его передают в `taskPrompt`.
     private func buildRequest(key: Int, variant: VariantConfig?, nameSuffix: String, name: String? = nil,
                               taskPrompt: String?, revisePrompt: String?, input: String,
                               purpose: LLMPurpose) throws -> LLMRequest {

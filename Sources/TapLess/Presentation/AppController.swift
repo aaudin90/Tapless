@@ -1005,7 +1005,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Прогоняет надиктованное замечание через LLM (`llm.feedback_prompt`): Whisper путает термины.
-    /// Если LLM не ответила, возвращает текст как распознан — замечание важнее чистки.
+    /// Чистит harness и модель правимой строки `key`. Если LLM не ответила, возвращает текст
+    /// как распознан — замечание важнее чистки.
     private func cleanFeedback(_ text: String, session sid: UUID, key: Int) async -> String {
         guard format.cleansFeedback else { return text }
         model.feedbackPhase = .polishing
@@ -1014,7 +1015,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             let format = self.format
             let cleaned = try await HistoryContext.$session.withValue(sid) {
-                try await format.cleanFeedback(text)
+                try await format.cleanFeedback(text, key: key)
             }
             Log.info(String(format: "%@ Замечание исправлено за %.2f с: %@", t, Date().timeIntervalSince(started), Log.text(cleaned)), .llm)
             return cleaned
@@ -1022,7 +1023,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard isStillEditing(sid, key: key), !(error is CancellationError) else { return text }
             Log.error(String(format: "%@ Чистка замечания не удалась за %.2f с: %@", t, Date().timeIntervalSince(started), error.localizedDescription), .llm)
             model.note = "Замечание вставлено как распознано: ИИ не ответил (\(error.localizedDescription))."
-            if format.feedbackHarnessKind == .ollama {
+            if format.harnessKind(forRevisionKey: key) == .ollama {
                 startLocalLLMSetup(reason: "чистка замечания не удалась")
             }
             return text

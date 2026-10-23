@@ -192,6 +192,9 @@ private actor RecordingSetup: LocalLLMSetup {
     @Test func reviseVariantBuildsPromptAndInput() async throws {
         var config = defaultConfig()
         config.variants[0].schema = "text"
+        config.harnesses["other"] = config.harnesses[config.llm.harness]
+        config.variants[0].harness = "other"
+        config.variants[0].model = "row-model"
         let llm = RecordingLLM(reply: "```\nПравка.\n```")
         let useCase = FormatTextUseCase(llm: llm, config: config)
         #expect(useCase.canRevise(key: 2))
@@ -202,6 +205,8 @@ private actor RecordingSetup: LocalLLMSetup {
         let request = try #require(await llm.requests.first)
         #expect(request.variantKey == 2)
         #expect(request.variantName == config.variants[0].name + " (правка)")
+        #expect(request.harnessName == "other")
+        #expect(request.model == "row-model")
         #expect(request.systemPrompt.contains(config.variants[0].prompt))
         #expect(request.systemPrompt.hasSuffix(config.llm.revisePrompt))
         #expect(request.systemPrompt.contains("Это правка"))
@@ -238,9 +243,9 @@ private actor RecordingSetup: LocalLLMSetup {
         let llm = RecordingLLM(reply: "```\nИсправлено.\n```")
         let useCase = FormatTextUseCase(llm: llm, config: config)
         #expect(useCase.cleansFeedback)
-        #expect(useCase.feedbackHarnessKind == config.harnesses[config.llm.harness]?.kind)
+        let rawKey = try #require(config.rawTextKey)
 
-        let result = try await useCase.cleanFeedback("сделай покороче")
+        let result = try await useCase.cleanFeedback("сделай покороче", key: rawKey)
         #expect(result == "Исправлено.")
 
         let request = try #require(await llm.requests.first)
@@ -255,13 +260,36 @@ private actor RecordingSetup: LocalLLMSetup {
         #expect(request.systemPrompt.hasSuffix("\n" + config.llm.feedbackPrompt))
     }
 
+    /// Замечание к строке варианта чистит harness и модель этого варианта, но без его промпта и схемы.
+    @Test func cleanFeedbackUsesRowHarness() async throws {
+        var config = defaultConfig()
+        config.harnesses["other"] = config.harnesses[config.llm.harness]
+        config.variants[0].harness = "other"
+        config.variants[0].model = "row-model"
+        config.variants[0].schema = "text"
+        let llm = RecordingLLM(reply: "Исправлено.")
+        let useCase = FormatTextUseCase(llm: llm, config: config)
+        let key = useCase.firstVariantKey
+
+        _ = try await useCase.cleanFeedback("сделай покороче", key: key)
+
+        let request = try #require(await llm.requests.first)
+        #expect(request.variantKey == FormatTextUseCase.feedbackKey)
+        #expect(request.variantName == "Замечание")
+        #expect(request.harnessName == "other")
+        #expect(request.model == "row-model")
+        #expect(request.schema == nil)
+        #expect(!request.systemPrompt.contains(config.variants[0].prompt))
+        #expect(request.systemPrompt.hasSuffix("\n" + config.llm.feedbackPrompt))
+    }
+
     @Test func emptyFeedbackPromptSkipsLLM() async throws {
         var config = defaultConfig()
         config.llm.feedbackPrompt = " \n "
         let llm = RecordingLLM(reply: "не должно вызываться")
         let useCase = FormatTextUseCase(llm: llm, config: config)
         #expect(!useCase.cleansFeedback)
-        let result = try await useCase.cleanFeedback("как есть")
+        let result = try await useCase.cleanFeedback("как есть", key: 1)
         #expect(result == "как есть")
         #expect(await llm.requests.isEmpty)
     }
@@ -269,7 +297,7 @@ private actor RecordingSetup: LocalLLMSetup {
     @Test func emptyFeedbackReplyIsError() async {
         let useCase = FormatTextUseCase(llm: RecordingLLM(reply: "  "), config: defaultConfig())
         await #expect(throws: FormatTextError.emptyOutput) {
-            try await useCase.cleanFeedback("a")
+            try await useCase.cleanFeedback("a", key: 1)
         }
     }
 
