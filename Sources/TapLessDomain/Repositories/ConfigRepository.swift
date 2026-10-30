@@ -27,7 +27,12 @@ public protocol ConfigRepository: Sendable {
     @discardableResult
     func saveTemplateIfMissing() throws -> Bool
 
-    /// Записывает в файл одно целое значение `[table] key = value` (настройка из меню).
+    /// Записывает в файл одно целое значение `[table] key = value` (настройка из меню:
+    /// сейчас `paste.auto_select`). Если файл — симлинк, пишется его цель.
     /// Остальной файл, комментарии и порядок строк не меняются. Не вышло — файл не тронут.
     func setInteger(_ value: Int, forKey key: String, inTable table: String) throws
+
+    /// То же для строки `[table] key = "value"` (настройки из меню: сейчас `general.microphone`
+    /// и `general.voice_processing`).
+    func setString(_ value: String, forKey key: String, inTable table: String) throws
 }

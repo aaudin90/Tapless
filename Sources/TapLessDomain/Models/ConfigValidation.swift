@@ -13,6 +13,10 @@ extension AppConfig {
             warnings.append("general.mode = \"\(general.mode)\": ожидается \"toggle\" или \"hold\" — используется \"toggle\".")
         }
 
+        if !VoiceProcessingMode.isValid(general.voiceProcessing) {
+            warnings.append("general.voice_processing = \"\(general.voiceProcessing)\": ожидается \"off\" или \"call\" — используется \"off\".")
+        }
+
         // Одинаковые сочетания: вторая клавиша не зарегистрируется. Сравнение без учёта
         // порядка, регистра и пробелов; синонимы (alt / option) не распознаются.
         func keyParts(_ s: String) -> Set<String> {

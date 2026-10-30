@@ -17,9 +17,15 @@ public struct GeneralConfig: Sendable, Equatable {
     public var maxRecordingSeconds: Int
     /// Раз в сутки проверять новый релиз на GitHub. Пункт меню «Проверить обновления» работает всегда.
     public var checkUpdates: Bool
+    /// Микрофон: `"auto"`, `"system"` или UID/имя устройства (см. `MicrophoneSetting`).
+    /// Пустая строка — как `"auto"`.
+    public var microphone: String
+    /// Голосовая обработка Apple (VPIO) на звонке: `"off"` или `"call"` (см. `VoiceProcessingMode`).
+    public var voiceProcessing: String
 
     public init(hotkey: String, showLastHotkey: String, mode: String, sounds: Bool,
-                minRecordingMs: Int, tailMs: Int, maxRecordingSeconds: Int, checkUpdates: Bool) {
+                minRecordingMs: Int, tailMs: Int, maxRecordingSeconds: Int, checkUpdates: Bool,
+                microphone: String, voiceProcessing: String) {
         self.hotkey = hotkey
         self.showLastHotkey = showLastHotkey
         self.mode = mode
@@ -28,6 +34,8 @@ public struct GeneralConfig: Sendable, Equatable {
         self.tailMs = tailMs
         self.maxRecordingSeconds = maxRecordingSeconds
         self.checkUpdates = checkUpdates
+        self.microphone = microphone
+        self.voiceProcessing = voiceProcessing
     }
 
     public var isHoldMode: Bool { mode.lowercased() == "hold" }

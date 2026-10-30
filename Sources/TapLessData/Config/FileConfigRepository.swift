@@ -21,7 +21,9 @@ enum ConfigError: LocalizedError {
 
 /// Конфиг = встроенные значения по умолчанию (config.default.toml → DefaultConfig)
 /// + пользовательский TOML-файл поверх них. Файл хранит только переопределения;
-/// приложение его не перезаписывает, только создаёт шаблон при первом запуске.
+/// приложение его не перезаписывает, только создаёт шаблон при первом запуске. Исключение —
+/// одна строка `paste.auto_select`, `general.microphone` или `general.voice_processing` из меню
+/// (`setInteger` / `setString`). Запись идёт в цель симлинка, если файл — ссылка.
 public struct FileConfigRepository: ConfigRepository {
     public let fileURL: URL
 
@@ -67,14 +69,30 @@ public struct FileConfigRepository: ConfigRepository {
     public func saveTemplateIfMissing() throws -> Bool {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: fileURL.path) else { return false }
-        try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let target = writeTarget
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         let path = (fileURL.path as NSString).abbreviatingWithTildeInPath
         let template = ConfigTemplate.make(defaultsTOML: DefaultConfig.toml, filePath: path)
-        try template.write(to: fileURL, atomically: true, encoding: .utf8)
+        try template.write(to: target, atomically: true, encoding: .utf8)
         return true
     }
 
     public func setInteger(_ value: Int, forKey key: String, inTable table: String) throws {
+        try setValue(String(value), forKey: key, inTable: table, description: "\(table).\(key) = \(value)") {
+            $0 as? Int == value
+        }
+    }
+
+    public func setString(_ value: String, forKey key: String, inTable table: String) throws {
+        try setValue(TOMLLineEditor.stringLiteral(value), forKey: key, inTable: table,
+                     description: "\(table).\(key) = \"\(value)\"") {
+            $0 as? String == value
+        }
+    }
+
+    /// Ставит `key = literal` в файле пользователя; `isExpected` проверяет значение в разобранном итоге.
+    private func setValue(_ literal: String, forKey key: String, inTable table: String, description: String,
+                          isExpected: (Any?) -> Bool) throws {
         try saveTemplateIfMissing()
         let text: String
         do {
@@ -82,14 +100,31 @@ public struct FileConfigRepository: ConfigRepository {
         } catch {
             throw ConfigError.io(error.localizedDescription)
         }
-        let updated = TOMLLineEditor.setValue(String(value), forKey: key, inTable: table, in: text)
+        let updated = TOMLLineEditor.setValue(literal, forKey: key, inTable: table, in: text)
         // Правка строк не понимает всего TOML (например, inline-таблицы): проверяем итог разбором.
         let parsed = try Self.table(fromTOML: updated)
-        guard (parsed[table] as? [String: Any])?[key] as? Int == value else {
-            throw ConfigError.schema("не удалось записать \(table).\(key) = \(value): поправьте файл вручную")
+        guard isExpected((parsed[table] as? [String: Any])?[key]) else {
+            throw ConfigError.schema("не удалось записать \(description): поправьте файл вручную")
         }
+        try write(updated)
+    }
+
+    /// Файл, в который идёт запись: цель симлинка, а не сам симлинк. Атомарная запись по пути
+    /// симлинка заменила бы его обычным файлом и сломала dotfiles (stow, chezmoi).
+    private var writeTarget: URL {
+        fileURL.resolvingSymlinksInPath()
+    }
+
+    /// Атомарно записывает файл пользователя: временный файл создаётся рядом с целью симлинка,
+    /// права прежнего файла сохраняются.
+    private func write(_ text: String) throws {
+        let target = writeTarget
+        let permissions = (try? FileManager.default.attributesOfItem(atPath: target.path))?[.posixPermissions]
         do {
-            try updated.write(to: fileURL, atomically: true, encoding: .utf8)
+            try text.write(to: target, atomically: true, encoding: .utf8)
+            if let permissions {
+                try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: target.path)
+            }
         } catch {
             throw ConfigError.io(error.localizedDescription)
         }

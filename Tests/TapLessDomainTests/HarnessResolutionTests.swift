@@ -6,7 +6,8 @@ func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String = "cli",
                         llmModel: String = "llm-model", variants: [VariantConfig]) -> AppConfig {
     AppConfig(
         general: GeneralConfig(hotkey: "option+quote", showLastHotkey: "option+semicolon", mode: "toggle", sounds: false,
-                               minRecordingMs: 300, tailMs: 0, maxRecordingSeconds: 60, checkUpdates: false),
+                               minRecordingMs: 300, tailMs: 0, maxRecordingSeconds: 60, checkUpdates: false,
+                               microphone: "auto", voiceProcessing: "off"),
         paste: PasteConfig(autoPaste: true, restoreClipboard: true, pasteDelayMs: 0, restoreDelayMs: 0),
         ui: UIConfig(position: "top", width: 400, maxLines: 5, showRaw: true),
         stt: STTConfig(model: "m", modelPath: "", modelRepo: "", language: "ru",
@@ -233,5 +234,18 @@ func makeConfig(harnesses: [String: HarnessConfig], llmHarness: String = "cli",
         #expect(!config.validationWarnings.contains { $0.contains("show_last_hotkey") })
         config.general.showLastHotkey = "option+semicolon"
         #expect(!config.validationWarnings.contains { $0.contains("show_last_hotkey") })
+    }
+
+    @Test func unknownVoiceProcessingWarns() {
+        var config = makeConfig(harnesses: ["cli": cli], variants: [VariantConfig(name: "v", prompt: "p")])
+        for value in ["off", "call", "Call"] {
+            config.general.voiceProcessing = value
+            #expect(!config.validationWarnings.contains { $0.contains("voice_processing") })
+        }
+        config.general.voiceProcessing = "always"
+        #expect(config.validationWarnings.contains { $0.contains("general.voice_processing = \"always\"") && $0.contains("\"off\"") })
+        #expect(VoiceProcessingMode(config.general.voiceProcessing) == .off)
+        config.general.voiceProcessing = ""
+        #expect(config.validationWarnings.contains { $0.contains("voice_processing") })
     }
 }

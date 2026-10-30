@@ -406,6 +406,26 @@ private actor RecordingSetup: LocalLLMSetup {
         #expect(useCase.rejection(for: shortAndQuiet) == .tooShort(seconds: 0.1))
     }
 
+    /// Тихая запись с VPIO усилена до 0.05, но её уровень до усиления ниже порога: это тишина.
+    @Test func silenceIsCheckedByLevelBeforeAmplification() {
+        let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: ""), config: defaultConfig())
+        let second = Int(AudioClip.sampleRate)
+        #expect(defaultConfig().stt.silenceThreshold > 0.003)
+
+        let amplifiedNoise = AudioClip(samples: Array(repeating: 0.05, count: second), peakLevel: 0.03, silenceLevel: 0.003)
+        #expect(useCase.rejection(for: amplifiedNoise) == .silence)
+
+        let quietSpeech = AudioClip(samples: Array(repeating: 0.05, count: second), peakLevel: 0.05, silenceLevel: 0.02)
+        #expect(useCase.rejection(for: quietSpeech) == nil)
+
+        // Без уровня до усиления (сырой вход звонка, обычная запись) проверяется peakLevel.
+        let raw = AudioClip(samples: Array(repeating: 0.05, count: second), peakLevel: 0.1)
+        #expect(raw.silenceLevel == 0.1)
+        #expect(useCase.rejection(for: raw) == nil)
+        let rawCall = AudioClip(samples: Array(repeating: 0.05, count: second), peakLevel: 0.1, silenceLevel: nil)
+        #expect(useCase.rejection(for: rawCall) == nil)
+    }
+
     @Test func zeroMinRecordingAllowsEmptyClip() {
         var config = defaultConfig()
         config.general.minRecordingMs = 0

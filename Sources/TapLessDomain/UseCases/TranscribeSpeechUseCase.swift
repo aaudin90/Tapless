@@ -38,7 +38,7 @@ public struct TranscribeSpeechUseCase: Sendable {
         if clip.duration * 1000 < Double(general.minRecordingMs) {
             return .tooShort(seconds: clip.duration)
         }
-        if Double(clip.peakLevel) < stt.silenceThreshold {
+        if Double(clip.silenceLevel) < stt.silenceThreshold {
             return .silence
         }
         return nil

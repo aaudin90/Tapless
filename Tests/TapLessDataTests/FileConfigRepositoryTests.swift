@@ -106,6 +106,124 @@ import TapLessDomain
         #expect(try String(contentsOf: repository.fileURL, encoding: .utf8) == original)
     }
 
+    @Test func defaultMicrophoneIsAuto() {
+        let config = FileConfigRepository(fileURL: URL(fileURLWithPath: "/nonexistent")).defaults()
+        #expect(config.general.microphone == "auto")
+        #expect(config.general.voiceProcessing == "call")
+    }
+
+    @Test func setStringWritesVoiceProcessing() throws {
+        let repository = try makeRepository("[general]\nsounds = false\n")
+        try repository.setString("off", forKey: "voice_processing", inTable: "general")
+        let loaded = try repository.load()
+        #expect(loaded.config.general.voiceProcessing == "off")
+        #expect(loaded.warnings.isEmpty)
+    }
+
+    @Test func setStringReplacesValueAndKeepsComments() throws {
+        let repository = try makeRepository("""
+        # шапка
+        [general]
+        sounds = false
+        microphone = "auto"   # из меню
+
+        [ui]
+        width = 700
+        """)
+        try repository.setString("BuiltInMicrophoneDevice", forKey: "microphone", inTable: "general")
+        let text = try String(contentsOf: repository.fileURL, encoding: .utf8)
+        #expect(text == """
+        # шапка
+        [general]
+        sounds = false
+        microphone = "BuiltInMicrophoneDevice"   # из меню
+
+        [ui]
+        width = 700
+        """)
+        #expect(try repository.load().config.general.microphone == "BuiltInMicrophoneDevice")
+    }
+
+    @Test func setStringReplacesValueWithHashAndQuotes() throws {
+        let repository = try makeRepository("[general]\nmicrophone = \"a#b \\\" c\"  # заметка\n")
+        try repository.setString("system", forKey: "microphone", inTable: "general")
+        #expect(try String(contentsOf: repository.fileURL, encoding: .utf8)
+                == "[general]\nmicrophone = \"system\"  # заметка\n")
+    }
+
+    @Test func setStringEscapesSpecialCharacters() throws {
+        let repository = try makeRepository("[general]\nsounds = true\n")
+        let name = "Микрофон \"Студия\" \\ #1\tX"
+        try repository.setString(name, forKey: "microphone", inTable: "general")
+        #expect(try repository.load().config.general.microphone == name)
+    }
+
+    @Test func setStringAddsKeyAndTable() throws {
+        let withTable = try makeRepository("[general] # общее\nsounds = false\n\n[ui]\nwidth = 700\n")
+        try withTable.setString("system", forKey: "microphone", inTable: "general")
+        #expect(try String(contentsOf: withTable.fileURL, encoding: .utf8)
+                == "[general] # общее\nmicrophone = \"system\"\nsounds = false\n\n[ui]\nwidth = 700\n")
+        #expect(try withTable.load().config.general.microphone == "system")
+
+        let withoutTable = try makeRepository("[ui]\nwidth = 700\n# [general]\n# microphone = \"auto\"\n")
+        try withoutTable.setString("system", forKey: "microphone", inTable: "general")
+        #expect(try String(contentsOf: withoutTable.fileURL, encoding: .utf8)
+                == "[ui]\nwidth = 700\n# [general]\n# microphone = \"auto\"\n\n[general]\nmicrophone = \"system\"\n")
+        #expect(try withoutTable.load().config.general.microphone == "system")
+    }
+
+    @Test func setStringCreatesTemplateWhenFileIsMissing() throws {
+        let repository = try makeRepository(nil)
+        try repository.setString("system", forKey: "microphone", inTable: "general")
+        let loaded = try repository.load()
+        #expect(loaded.config.general.microphone == "system")
+        #expect(loaded.warnings.isEmpty)
+    }
+
+    @Test func setStringLeavesFileWhenResultIsWrong() throws {
+        let original = "general = { sounds = true }\n"
+        let repository = try makeRepository(original)
+        #expect(throws: ConfigError.self) {
+            try repository.setString("system", forKey: "microphone", inTable: "general")
+        }
+        #expect(try String(contentsOf: repository.fileURL, encoding: .utf8) == original)
+    }
+
+    private func makeSymlinkedRepository(_ toml: String) throws -> (repository: FileConfigRepository, target: URL) {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("tapless-tests-\(UUID().uuidString)", isDirectory: true)
+        let dotfiles = root.appendingPathComponent("dotfiles", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        try fm.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        directories.append(root)
+        let target = dotfiles.appendingPathComponent("tapless.toml")
+        try toml.write(to: target, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        let link = home.appendingPathComponent("tapless.toml")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        return (FileConfigRepository(fileURL: link), target)
+    }
+
+    @Test func setStringWritesThroughSymlink() throws {
+        let (repository, target) = try makeSymlinkedRepository("[general]\nmicrophone = \"auto\"\n")
+        try repository.setString("system", forKey: "microphone", inTable: "general")
+        let fm = FileManager.default
+        let destination = try fm.destinationOfSymbolicLink(atPath: repository.fileURL.path)
+        #expect(URL(fileURLWithPath: destination).resolvingSymlinksInPath() == target.resolvingSymlinksInPath())
+        #expect(try String(contentsOf: target, encoding: .utf8) == "[general]\nmicrophone = \"system\"\n")
+        #expect(try repository.load().config.general.microphone == "system")
+        let permissions = try fm.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o600)
+    }
+
+    @Test func setIntegerWritesThroughSymlink() throws {
+        let (repository, target) = try makeSymlinkedRepository("[paste]\nauto_select = 0\n")
+        try repository.setInteger(2, forKey: "auto_select", inTable: "paste")
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: repository.fileURL.path)) != nil)
+        #expect(try String(contentsOf: target, encoding: .utf8) == "[paste]\nauto_select = 2\n")
+    }
+
     @Test func missingFileGivesDefaults() throws {
         let repository = try makeRepository(nil)
         let loaded = try repository.load()

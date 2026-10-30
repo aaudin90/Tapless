@@ -71,6 +71,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Автовставка: клавиша строки, которая вставляется сама; nil — выбор цифрой.
     /// Начальное значение — `paste.auto_select`, меняется из меню без перезапуска.
     private var autoSelectKey: Int?
+    /// Значение `general.microphone`. Меняется из меню на ходу, действует со следующей записи.
+    private var microphone: String
+    /// Значение `general.voice_processing` (VPIO на звонке). Меняется из меню, действует со следующей записи.
+    private var voiceProcessing: String
     /// Правки строк по клавишам: новая правка той же строки отменяет прежнюю.
     private var revisionJobs: [Int: Task<Void, Never>] = [:]
     /// Распознавание замечания. Как и `transcribeTask`, живёт, пока Whisper занят.
@@ -120,6 +124,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modelsDirectory = deps.modelsDirectory
         logFile = deps.logFile
         autoSelectKey = deps.config.autoSelectKey
+        microphone = deps.config.general.microphone
+        voiceProcessing = deps.config.general.voiceProcessing
         super.init()
     }
 
@@ -240,6 +246,44 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Log.error("Не удалось записать paste.auto_select: \(error.localizedDescription)", .config)
             showAlert(title: "Автовставка не сохранена",
                       text: "Выбор действует до перезапуска TapLess. Не удалось записать paste.auto_select в \(configPathDisplay): \(error.localizedDescription)")
+        }
+    }
+
+    /// Меню → «Микрофон»: выбор действует со следующей записи (идущую запись не трогаем) и пишется
+    /// в `general.microphone`. Для устройства в файл идёт UID. Файл не записался — прежний выбор остаётся
+    /// и в памяти (иначе повторный выбор того же пункта упёрся бы в проверку «значение не изменилось»).
+    private func setMicrophone(_ value: String) {
+        guard MicrophoneSetting(value) != MicrophoneSetting(microphone) else { return }
+        Log.info("Меню: Микрофон — \(value)", .app)
+        let previous = microphone
+        microphone = value
+        do {
+            try configRepository.setString(value, forKey: "microphone", inTable: "general")
+            Log.info("Микрофон записан в \(configRepository.fileURL.path): general.microphone = \(value)", .config)
+        } catch {
+            microphone = previous
+            Log.error("Не удалось записать general.microphone: \(error.localizedDescription)", .config)
+            showAlert(title: "Микрофон не сохранён",
+                      text: "Выбор не применён, остаётся прежний. Не удалось записать general.microphone в \(configPathDisplay): \(error.localizedDescription)")
+        }
+    }
+
+    /// Меню → «Голосовая обработка на звонке»: действует со следующей записи и пишется в `general.voice_processing`.
+    /// Файл не записался — прежнее значение остаётся и в памяти. Смена пункта сбрасывает запомненный сбой VPIO.
+    private func setVoiceProcessing(_ mode: VoiceProcessingMode) {
+        guard mode != VoiceProcessingMode(voiceProcessing) else { return }
+        Log.info("Меню: Голосовая обработка на звонке — \(mode.rawValue)", .app)
+        let previous = voiceProcessing
+        voiceProcessing = mode.rawValue
+        AudioRecorder.resetVoiceProcessingFailure()
+        do {
+            try configRepository.setString(mode.rawValue, forKey: "voice_processing", inTable: "general")
+            Log.info("Голосовая обработка записана в \(configRepository.fileURL.path): general.voice_processing = \(mode.rawValue)", .config)
+        } catch {
+            voiceProcessing = previous
+            Log.error("Не удалось записать general.voice_processing: \(error.localizedDescription)", .config)
+            showAlert(title: "Голосовая обработка не сохранена",
+                      text: "Выбор не применён, остаётся прежний. Не удалось записать general.voice_processing в \(configPathDisplay): \(error.localizedDescription)")
         }
     }
 
@@ -437,7 +481,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         do {
-            try recorder.start()
+            try recorder.start(microphone: MicrophoneSetting(microphone), voiceProcessing: VoiceProcessingMode(voiceProcessing))
         } catch {
             Log.error("Не удалось начать запись: \(error)", .audio)
             showMessage("Не удалось начать запись: \(error.localizedDescription)", seconds: 6)
@@ -542,7 +586,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishRecording(_ sid: UUID) async {
         let clip = recorder.stop()
         let t = tag(sid)
-        Log.info(String(format: "%@ Запись завершена: %.2f с, %ld отсчётов, пик RMS %.4f", t, clip.duration, clip.samples.count, clip.peakLevel), .audio)
+        Log.info(String(format: "%@ Запись завершена: %.2f с, %ld отсчётов, пик RMS %.4f (для проверки тишины %.4f)", t, clip.duration, clip.samples.count, clip.peakLevel, clip.silenceLevel), .audio)
 
         switch transcribe.rejection(for: clip) {
         case .tooShort(let seconds):
@@ -550,7 +594,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             closePopup(reason: "слишком короткая запись")
             return
         case .silence:
-            Log.info(String(format: "%@ Отклонено: тишина (пик %.4f, порог %.4f)", t, clip.peakLevel, config.stt.silenceThreshold), .audio)
+            Log.info(String(format: "%@ Отклонено: тишина (уровень %.4f, порог %.4f)", t, clip.silenceLevel, config.stt.silenceThreshold), .audio)
             showMessage("Тишина — ничего не записано. Проверьте микрофон или порог stt.silence_threshold.", seconds: 4)
             return
         case nil:
@@ -896,7 +940,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         do {
-            try recorder.start()
+            try recorder.start(microphone: MicrophoneSetting(microphone), voiceProcessing: VoiceProcessingMode(voiceProcessing))
         } catch {
             Log.error("Не удалось начать запись замечания: \(error)", .audio)
             model.note = "Не удалось начать запись: \(error.localizedDescription)"
@@ -1525,6 +1569,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                #selector(showLastResultAction),
                enabled: hasResults && state != .recording && state != .transcribing && state != .editing)
         menu.addItem(autoSelectMenuItem())
+        menu.addItem(microphoneMenuItem())
+        action("Голосовая обработка на звонке", #selector(voiceProcessingAction),
+               checked: VoiceProcessingMode(voiceProcessing) == .call)
         menu.addItem(.separator())
 
         action("Открыть конфиг…", #selector(openConfigAction))
@@ -1564,6 +1611,57 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu.addItem(note)
         item.submenu = submenu
         return item
+    }
+
+    /// Подменю «Микрофон»: «Авто», «Как в системе» и текущие устройства ввода (список читается при открытии меню).
+    private func microphoneMenuItem() -> NSMenuItem {
+        let setting = MicrophoneSetting(microphone)
+        // Устройство без UID не выбрать: в файл ушла бы пустая строка, то есть «авто».
+        let devices = AudioRecorder.inputDevices().filter { !$0.uid.isEmpty }
+        let title: String
+        switch setting {
+        case .auto: title = "Микрофон: авто"
+        case .system: title = "Микрофон: как в системе"
+        case .device(let wanted):
+            title = "Микрофон: " + (devices.first { $0.uid == wanted || $0.name.caseInsensitiveCompare(wanted) == .orderedSame }?.name ?? wanted)
+        }
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        func choice(_ title: String, value: String, checked: Bool) {
+            let entry = NSMenuItem(title: title, action: #selector(microphoneAction(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = value
+            entry.state = checked ? .on : .off
+            submenu.addItem(entry)
+        }
+        choice("Авто (не Bluetooth)", value: MicrophoneSetting.autoValue, checked: setting == .auto)
+        choice("Как в системе", value: MicrophoneSetting.systemValue, checked: setting == .system)
+        submenu.addItem(.separator())
+        // Галочка — на устройстве, которое сверка по UID, а потом по имени нашла бы первым.
+        var checkedID: UInt32?
+        if case .device(let wanted) = setting {
+            checkedID = (devices.first { $0.uid == wanted } ?? devices.first { $0.name.caseInsensitiveCompare(wanted) == .orderedSame })?.id
+        }
+        for device in devices {
+            let name = device.transport == .bluetooth ? "\(device.name) (Bluetooth)" : device.name
+            choice(name, value: device.uid, checked: device.id == checkedID)
+        }
+        if devices.isEmpty {
+            let note = NSMenuItem(title: "Устройств ввода нет", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            submenu.addItem(note)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func voiceProcessingAction() {
+        setVoiceProcessing(VoiceProcessingMode(voiceProcessing) == .call ? .off : .call)
+    }
+
+    @objc private func microphoneAction(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        setMicrophone(value)
     }
 
     @objc private func autoSelectAction(_ sender: NSMenuItem) {
