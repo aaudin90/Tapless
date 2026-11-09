@@ -5,6 +5,7 @@
 //   TapLess (exe)  — main (сборка зависимостей) + Presentation + Platform
 //   TapLessData    — реализации репозиториев: конфиг (TOML), LLM (внешняя команда), STT (WhisperKit)
 //   TapLessDomain  — модели, сценарии, протоколы репозиториев; только Foundation
+//   TapLessObjCSupport — Objective-C: перехват NSException, которую Swift ловить не умеет
 
 import PackageDescription
 
@@ -18,6 +19,11 @@ let package = Package(
         .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.5.0"),
     ],
     targets: [
+        .target(
+            name: "TapLessObjCSupport",
+            path: "Sources/TapLessObjCSupport",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "TapLessDomain",
             path: "Sources/TapLessDomain"
@@ -33,7 +39,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "TapLess",
-            dependencies: ["TapLessDomain", "TapLessData"],
+            dependencies: ["TapLessDomain", "TapLessData", "TapLessObjCSupport"],
             path: "Sources/TapLess"
         ),
         .testTarget(
@@ -43,7 +49,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TapLessDataTests",
-            dependencies: ["TapLessDomain", "TapLessData"],
+            dependencies: ["TapLessDomain", "TapLessData", "TapLessObjCSupport"],
             path: "Tests/TapLessDataTests"
         ),
     ]

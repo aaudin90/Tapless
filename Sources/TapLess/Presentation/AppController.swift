@@ -554,8 +554,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Паузы между повторными попытками перезапуска движка (мс). Смена устройства ввода (AirPods и т. п.)
+    /// занимает доли секунды, и сразу после уведомления формат входа ещё может быть старым.
+    private static let audioRetryDelaysMs: [UInt64] = [250, 500, 1000, 1000]
+
     /// Сменилось устройство ввода: движок остановился сам. Перезапускаем его на новом
-    /// устройстве, уже записанное сохраняется. Не вышло — распознаём то, что успели записать.
+    /// устройстве, уже записанное сохраняется. Если перезапуск не вышел, пробуем ещё несколько раз с паузами
+    /// (запись при этом остаётся открытой). Не вышло совсем — распознаём то, что успели записать.
+    /// `audioRestartPending` держится всю последовательность: новые уведомления не запускают вторую.
     private func audioConfigurationChanged() {
         if isRecordingFeedback {
             // Замечание короткое: не перезапускаем движок, а распознаём то, что успели записать.
@@ -571,15 +577,39 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Уведомления приходят пачкой (например, AirPods переключают профиль) — ждём, пока утихнут.
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard let self else { return }
-            self.audioRestartPending = false
+            // Любой выход — сброс флага; сессия и состояние проверяются после каждой паузы.
+            defer { self.audioRestartPending = false }
             guard self.session == sid, self.state == .recording else { return }
+            let t = self.tag(sid)
             do {
                 try self.recorder.restart()
-                Log.info("\(self.tag(sid)) Устройство ввода сменилось — запись продолжена", .audio)
-            } catch {
-                Log.error("\(self.tag(sid)) Устройство ввода сменилось, запись не продолжить: \(error.localizedDescription)", .audio)
+                Log.info("\(t) Устройство ввода сменилось — запись продолжена", .audio)
+                return
+            } catch RecorderError.unstableInput {
+                Log.error("\(t) Устройство ввода меняется слишком часто, запись не продолжить", .audio)
                 self.stopRecording(trigger: "ошибка устройства")
+                return
+            } catch {
+                Log.warning("\(t) Перезапуск движка не вышел: \(error.localizedDescription) — повторные попытки", .audio)
             }
+            let delays = Self.audioRetryDelaysMs
+            for (index, delay) in delays.enumerated() {
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                guard self.session == sid, self.state == .recording else { return }
+                // Последняя попытка идёт без предварительной сверки частоты: решает `installTap` под защитой от исключений.
+                let preflight = index < delays.count - 1
+                do {
+                    try self.recorder.retryRestart(preflight: preflight)
+                    Log.info("\(t) Устройство ввода сменилось — запись продолжена (попытка \(index + 1) из \(delays.count))", .audio)
+                    return
+                } catch RecorderError.unstableInput {
+                    break
+                } catch {
+                    Log.warning("\(t) Повторная попытка \(index + 1) из \(delays.count) не удалась: \(error.localizedDescription)", .audio)
+                }
+            }
+            Log.error("\(t) Устройство ввода сменилось, запись не продолжить — распознаётся записанное", .audio)
+            self.stopRecording(trigger: "ошибка устройства")
         }
     }
 
