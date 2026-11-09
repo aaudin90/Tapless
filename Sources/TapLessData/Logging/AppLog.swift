@@ -7,9 +7,17 @@ import TapLessDomain
 /// Файл больше 5 МБ переносится в `<имя>.1` (старый `.1` заменяется) —
 /// при подключении и во время работы.
 public enum AppLog {
+    private static var currentWriter: LogFileWriter?
+
+    /// Дожидается записи всего лога в файл. Запись асинхронная: перед `exit` без этого последние строки теряются.
+    public static func flush() {
+        currentWriter?.flush()
+    }
+
     /// Подключает приёмник. Большой файл уходит в `<имя>.1`, запись идёт в новый.
     public static func install(fileURL: URL, subsystem: String) {
         let writer = LogFileWriter(url: fileURL)
+        currentWriter = writer
         writer.rotateIfNeeded()
         let loggers = Dictionary(uniqueKeysWithValues: LogCategory.allCases.map {
             ($0, Logger(subsystem: subsystem, category: $0.rawValue))
