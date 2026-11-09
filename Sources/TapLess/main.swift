@@ -72,6 +72,23 @@ MainActor.assumeIsolated {
     AppLog.install(fileURL: paths.logFile, subsystem: Bundle.main.bundleIdentifier ?? "io.github.aaudin90.tapless")
     Log.minimumLevel = .debug
     logStartupBanner(paths)
+
+    // Один экземпляр: два процесса получали бы одну и ту же горячую клавишу и один микрофон. Только в .app —
+    // запуск из .build (разработка, агент) не блокируется. Замок живёт до выхода из процесса.
+    var instanceLock: InstanceLock?
+    if Bundle.main.bundleURL.pathExtension == "app" {
+        switch InstanceLock.acquire(at: paths.instanceLockFile) {
+        case .acquired(let lock):
+            instanceLock = lock
+        case .alreadyRunning:
+            Log.info("TapLess уже запущен (замок \(paths.instanceLockFile.path) занят другим процессом) — этот экземпляр завершается", .app)
+            AppLog.flush()
+            exit(0)
+        case .unavailable(let reason):
+            Log.warning("Замок единственного экземпляра недоступен (\(reason)) — запуск продолжается без него", .app)
+        }
+    }
+
     let removedLegacy = paths.removeLegacyLogFiles()
     if !removedLegacy.isEmpty {
         Log.info("Удалены старые файлы лога: \(removedLegacy.map(\.path).joined(separator: ", "))", .app)
@@ -143,7 +160,7 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.delegate = controller
     app.setActivationPolicy(.accessory)   // без иконки в Dock, только меню-бар
-    withExtendedLifetime(controller) {
+    withExtendedLifetime((controller, instanceLock)) {
         app.run()
     }
 }

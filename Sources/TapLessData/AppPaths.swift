@@ -15,6 +15,8 @@ public struct AppPaths: Sendable {
     /// Итоги проверок изоляции Codex: при той же версии и тех же настройках проверка не повторяется.
     public let codexCheckFile: URL
     public let logFile: URL
+    /// Замок единственного экземпляра (`InstanceLock`).
+    public let instanceLockFile: URL
 
     public static func make() -> AppPaths {
         let fm = FileManager.default
@@ -39,7 +41,8 @@ public struct AppPaths: Sendable {
             llmWorkdir: support.appendingPathComponent("llm-workdir", isDirectory: true),
             codexHome: support.appendingPathComponent("codex-home", isDirectory: true),
             codexCheckFile: support.appendingPathComponent("codex-check.json"),
-            logFile: home.appendingPathComponent("Library/Logs/TapLess/TapLess.log")
+            logFile: home.appendingPathComponent("Library/Logs/TapLess/TapLess.log"),
+            instanceLockFile: support.appendingPathComponent("instance.lock")
         )
     }
 
