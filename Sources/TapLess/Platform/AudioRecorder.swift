@@ -2,17 +2,20 @@ import Accelerate
 import AVFoundation
 import CoreAudio
 import TapLessDomain
+import TapLessObjCSupport
 
 enum RecorderError: LocalizedError {
     case noInputDevice
     case converterUnavailable
     case unstableInput
+    case inputSwitching
 
     var errorDescription: String? {
         switch self {
         case .noInputDevice: return "Микрофон недоступен (нет устройства ввода или нет разрешения)"
         case .converterUnavailable: return "Не удалось настроить преобразование звука в 16 кГц"
         case .unstableInput: return "Устройство ввода меняется слишком часто"
+        case .inputSwitching: return "Устройство ввода ещё переключается"
         }
     }
 }
@@ -66,6 +69,8 @@ final class AudioRecorder: @unchecked Sendable {
     private var restartTimes: [Date] = []
     private static let maxRestarts = 5
     private static let restartWindow: TimeInterval = 10
+    /// Длительность буфера tap (с). При 48 кГц система и так выдаёт буферы по ~100 мс.
+    private static let tapBufferDuration: Double = 0.1
 
     /// Усиление входа звонка: громкость речи поднимается до цели `SpeechGain.targetRMS`, но не больше чем в `mixedMaxGain` раз.
     private static let mixedMaxGain: Float = 100
@@ -132,11 +137,14 @@ final class AudioRecorder: @unchecked Sendable {
         restartTimes.removeAll()
         lock.unlock()
 
-        try startEngine()
+        try startEngine(preflight: false)
         isRecording = true
     }
 
-    /// Перезапускает движок на текущем устройстве ввода, сохраняя уже записанное.
+    /// Перезапускает движок на текущем устройстве ввода, сохраняя уже записанное. Перезапуски считаются:
+    /// не больше `maxRestarts` за `restartWindow`. Если перезапуск не вышел, запись остаётся открытой
+    /// (`isRecording`), движка нет, записанное сохранено; исключение — `unstableInput`, после него запись закрыта.
+    /// Повтор после неудачи — `retryRestart`.
     func restart() throws {
         guard isRecording else { return }
         let now = Date()
@@ -148,11 +156,23 @@ final class AudioRecorder: @unchecked Sendable {
             throw RecorderError.unstableInput
         }
         restartTimes.append(now)
+        try performRestart(preflight: true)
+    }
+
+    /// Повторная попытка после неудачного `restart()`: то же, но без учёта в `restartTimes`.
+    /// `preflight` — сверять частоту входа до `installTap` (см. `configureAndStart`). Запись при неудаче остаётся открытой.
+    func retryRestart(preflight: Bool) throws {
+        guard isRecording else { return }
+        try performRestart(preflight: preflight)
+    }
+
+    private func performRestart(preflight: Bool) throws {
         stopEngine()
         do {
-            try startEngine()
+            try startEngine(preflight: preflight)
         } catch {
-            isRecording = false
+            // Движок уже освобождён в `startEngine`; запись и отсчёты остаются, `stop` их заберёт.
+            Log.warning("Перезапуск движка не удался: \(Self.describeError(error))", .audio)
             throw error
         }
     }
@@ -225,7 +245,7 @@ final class AudioRecorder: @unchecked Sendable {
 
     // MARK: - Движок
 
-    private func startEngine() throws {
+    private func startEngine(preflight: Bool) throws {
         // Движок прошлой записи освобождается в фоне (`stop`): ждём, пока он отпустит устройство.
         releaseQueue.sync {}
         lock.lock()
@@ -241,7 +261,7 @@ final class AudioRecorder: @unchecked Sendable {
                 let engine = AVAudioEngine()
                 self.engine = engine
                 do {
-                    try configureAndStart(engine, voiceProcessing: .call)
+                    try configureAndStart(engine, voiceProcessing: .call, preflight: preflight)
                     return
                 } catch {
                     releaseEngine()
@@ -258,7 +278,7 @@ final class AudioRecorder: @unchecked Sendable {
         let engine = AVAudioEngine()
         self.engine = engine
         do {
-            try configureAndStart(engine, voiceProcessing: .off)
+            try configureAndStart(engine, voiceProcessing: .off, preflight: preflight)
         } catch {
             releaseEngine()
             throw error
@@ -271,7 +291,32 @@ final class AudioRecorder: @unchecked Sendable {
         return "\(error.localizedDescription) [\(nsError.domain) \(nsError.code)]"
     }
 
-    private func configureAndStart(_ engine: AVAudioEngine, voiceProcessing: VoiceProcessingMode) throws {
+    /// Ловит `NSException` из вызова AVFAudio: Swift её не ловит, она пролетает через его кадры и роняет приложение
+    /// (так было с `installTap`: «Format mismatch: input hw … client format …» при смене устройства ввода).
+    /// Исключение превращается в `RecorderError.inputSwitching`, имя и причина идут в лог. Ошибки самого `body`
+    /// (Swift `throw`) проходят как есть. Любой вызов `installTap`, `prepare`, `start` и `connect` — только через неё.
+    private static func guarded<T>(_ what: String, _ body: () throws -> T) throws -> T {
+        var result: Result<T, Error>?
+        do {
+            try TLExceptionGuard.runGuarded {
+                result = Result { try body() }
+            }
+        } catch {
+            let info = (error as NSError).userInfo
+            let name = info[TLExceptionNameKey] as? String ?? "?"
+            let reason = info[TLExceptionReasonKey] as? String ?? "?"
+            Log.error("AVFAudio бросил исключение в \(what): \(name): \(reason)", .audio)
+            throw RecorderError.inputSwitching
+        }
+        guard let result else { throw RecorderError.inputSwitching }
+        return try result.get()
+    }
+
+    /// `preflight` — при перезапуске до `installTap` сверить частоту входа узла с частотой, с которой читался формат:
+    /// если они разошлись, устройство ещё переключается и `installTap` бросил бы исключение. Сверка не заменяет
+    /// `guarded`: она сделана по `inputFormat(forBus:)`, и совпадает ли оно с «input hw» из исключения, не проверено.
+    /// Поэтому первый запуск и последний повтор идут без неё. С VPIO сверка не нужна: формат там задан явно.
+    private func configureAndStart(_ engine: AVAudioEngine, voiceProcessing: VoiceProcessingMode, preflight: Bool) throws {
         // Обращение к inputNode создаёт модуль ввода. Привязку к устройству делаем сразу после него,
         // до чтения формата, installTap и prepare: пока движок не инициализирован, устройство не открыто.
         let input = engine.inputNode
@@ -343,9 +388,24 @@ final class AudioRecorder: @unchecked Sendable {
         // С VPIO усиление ×100 не применяется, поэтому и индикатор показывает фактический уровень.
         let levelGain: Float = callInput && !voiceProcessed ? Self.mixedMaxGain : 1
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            self?.process(buffer, mixFormat: mixFormat, mixMode: mixMode, levelGain: levelGain,
-                          converter: converter, targetFormat: targetFormat)
+        if preflight && !voiceProcessed {
+            let hardwareRate = input.inputFormat(forBus: 0).sampleRate
+            if hardwareRate > 0, hardwareRate != inputFormat.sampleRate {
+                Log.warning("Устройство ввода ещё переключается: узел читает \(Int(inputFormat.sampleRate)) Гц, "
+                            + "аппаратура — \(Int(hardwareRate)) Гц; installTap пропущен", .audio)
+                throw RecorderError.inputSwitching
+            }
+        }
+
+        // Индикатор обновляется один раз на буфер, поэтому размер задаётся временем, а не кадрами:
+        // 4096 кадров на Bluetooth-гарнитуре (16 кГц) — это 256 мс, индикатор дёргается ~4 раза в секунду.
+        let tapFrames = AVAudioFrameCount((inputFormat.sampleRate * Self.tapBufferDuration).rounded())
+
+        try Self.guarded("installTap") {
+            input.installTap(onBus: 0, bufferSize: tapFrames, format: inputFormat) { [weak self] buffer, _ in
+                self?.process(buffer, mixFormat: mixFormat, mixMode: mixMode, levelGain: levelGain,
+                              converter: converter, targetFormat: targetFormat)
+            }
         }
 
         // Наблюдатель ставится до старта: уведомление, пришедшее во время запуска, иначе потерялось бы.
@@ -357,9 +417,9 @@ final class AudioRecorder: @unchecked Sendable {
             DispatchQueue.main.async { self?.engineConfigurationChanged(engine) }
         }
 
-        engine.prepare()
+        try Self.guarded("prepare") { engine.prepare() }
         do {
-            try engine.start()
+            try Self.guarded("start") { try engine.start() }
         } catch {
             Log.error("Не удалось запустить аудиодвижок: \(Self.describeError(error)); \(Self.describeGraph(engine, input: input))", .audio)
             throw error
@@ -406,7 +466,7 @@ final class AudioRecorder: @unchecked Sendable {
         let mixer = engine.mainMixerNode
         mixer.outputVolume = 0
         Log.info("Голосовая обработка, до связи микшер → выход: \(Self.describeGraph(engine, input: input)); формат связи — \(Self.describeFormat(format))", .audio)
-        engine.connect(mixer, to: engine.outputNode, format: format)
+        try Self.guarded("connect") { engine.connect(mixer, to: engine.outputNode, format: format) }
         Log.info("Голосовая обработка, после связи: \(Self.describeGraph(engine, input: input))", .audio)
         let actual = input.outputFormat(forBus: 0)
         guard actual.sampleRate > 0, actual.channelCount > 0,
