@@ -106,9 +106,9 @@ import TapLessDomain
         #expect(try String(contentsOf: repository.fileURL, encoding: .utf8) == original)
     }
 
-    @Test func defaultMicrophoneIsAuto() {
+    @Test func defaultMicrophoneIsSystem() {
         let config = FileConfigRepository(fileURL: URL(fileURLWithPath: "/nonexistent")).defaults()
-        #expect(config.general.microphone == "auto")
+        #expect(config.general.microphone == "system")
         #expect(config.general.voiceProcessing == "call")
     }
 
