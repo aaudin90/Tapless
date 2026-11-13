@@ -9,6 +9,11 @@ public protocol SpeechRecognizer: Sendable {
     /// Выгружает модель: следующий `prepare` загрузит её заново.
     func unload() async
 
-    /// Распознаёт 16 кГц mono семплы. `prompt` — подсказка с терминами, может быть пустой.
+    /// Режет 16 кГц mono запись на куски по паузам (не длиннее окна модели) и распознаёт каждый.
+    /// Куски — в порядке записи; текст куска может быть пустым. `prompt` — подсказка с терминами,
+    /// может быть пустой.
+    func transcribeChunks(_ samples: [Float], prompt: String) async throws -> [SpeechChunk]
+
+    /// Распознаёт один кусок из `transcribeChunks` целиком, без нарезки.
     func transcribe(_ samples: [Float], prompt: String) async throws -> String
 }

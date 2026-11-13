@@ -73,9 +73,50 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         await old?.unloadModels()
     }
 
+    public func transcribeChunks(_ samples: [Float], prompt: String) async throws -> [SpeechChunk] {
+        guard let whisper else { throw WhisperError.notLoaded }
+        let options = decodingOptions(prompt: prompt, whisper: whisper)
+
+        let started = Date()
+        // Та же нарезка, что у WhisperKit при chunkingStrategy = .vad, но куски остаются у нас:
+        // кусок, который модель вернула пустым, сценарий распознаёт заново.
+        let window = whisper.featureExtractor.windowSamples ?? Constants.defaultWindowSamples
+        let chunker = VADAudioChunker(vad: whisper.voiceActivityDetector ?? EnergyVAD())
+        let audioChunks = try await chunker.chunkAll(audioArray: samples, maxChunkLength: window, decodeOptions: options)
+        let results = await whisper.transcribeWithResults(
+            audioArrays: audioChunks.map { $0.audioSamples },
+            decodeOptions: options
+        )
+
+        var chunks: [SpeechChunk] = []
+        for (audio, result) in zip(audioChunks, results) {
+            let text = try result.get().map { $0.text }.joined(separator: " ")
+            chunks.append(SpeechChunk(samples: audio.audioSamples, text: text))
+        }
+        Log.info(String(format: "Распознано %.1f с аудио за %.2f с: кусков %ld, %ld симв.",
+                        Double(samples.count) / AudioClip.sampleRate,
+                        Date().timeIntervalSince(started),
+                        chunks.count,
+                        chunks.reduce(0) { $0 + $1.text.count }), .stt)
+        return chunks
+    }
+
     public func transcribe(_ samples: [Float], prompt: String) async throws -> String {
         guard let whisper else { throw WhisperError.notLoaded }
+        let options = decodingOptions(prompt: prompt, whisper: whisper)
 
+        let started = Date()
+        let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
+        let text = results.map { $0.text }.joined(separator: " ")
+        Log.info(String(format: "Распознано %.1f с аудио за %.2f с, %ld симв. (подсказка %@)",
+                        Double(samples.count) / AudioClip.sampleRate,
+                        Date().timeIntervalSince(started),
+                        text.count,
+                        prompt.isEmpty ? "нет" : "есть"), .stt)
+        return text
+    }
+
+    private func decodingOptions(prompt: String, whisper: WhisperKit) -> DecodingOptions {
         var promptTokens: [Int]?
         if !prompt.isEmpty, let tokenizer = whisper.tokenizer {
             let special = tokenizer.specialTokens.specialTokenBegin
@@ -99,18 +140,13 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             skipSpecialTokens: true,
             withoutTimestamps: true,
             promptTokens: promptTokens,
-            chunkingStrategy: .vad
+            // По умолчанию -1.5: если модель не уверена в первом токене, кусок завершается пустым,
+            // а повторы с ростом температуры дают случайный, часто тоже пустой результат.
+            // На записях TapLess это теряло целые фразы; без порога пустых кусков не было.
+            firstTokenLogProbThreshold: nil
         )
-
-        Log.debug("Параметры распознавания: язык \(language ?? "авто"), подсказка \(promptTokens?.count ?? 0) токенов (\(prompt.count) симв.), \(samples.count) отсчётов", .stt)
-        let started = Date()
-        let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
-        let text = results.map { $0.text }.joined(separator: " ")
-        Log.info(String(format: "Распознано %.1f с аудио за %.2f с, %ld симв.",
-                        Double(samples.count) / AudioClip.sampleRate,
-                        Date().timeIntervalSince(started),
-                        text.count), .stt)
-        return text
+        Log.debug("Параметры распознавания: язык \(language ?? "авто"), подсказка \(promptTokens?.count ?? 0) токенов (\(prompt.count) симв.)", .stt)
+        return options
     }
 
     // MARK: - Загрузка
