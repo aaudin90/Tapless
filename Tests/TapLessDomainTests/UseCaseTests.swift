@@ -21,18 +21,39 @@ private actor RecordingLLM: LLMRepository {
     }
 }
 
+/// Куски — по одному семплу на кусок: семпл равен номеру куска, чтобы проверять, какой кусок
+/// распознан заново. `retries` — ответ повторного распознавания по номеру куска.
 private final class StubRecognizer: SpeechRecognizer, @unchecked Sendable {
-    let reply: String
+    let chunkReplies: [String]
+    let retries: [Int: String]
     private let lock = NSLock()
     private var _prompts: [String] = []
+    private var _retried: [(chunk: Int, prompt: String)] = []
     var prompts: [String] { lock.withLock { _prompts } }
+    var retried: [(chunk: Int, prompt: String)] { lock.withLock { _retried } }
 
-    init(reply: String) { self.reply = reply }
+    init(reply: String) {
+        self.chunkReplies = [reply]
+        self.retries = [:]
+    }
+
+    init(chunks: [String], retries: [Int: String] = [:]) {
+        self.chunkReplies = chunks
+        self.retries = retries
+    }
+
     func prepare(status: @escaping @Sendable (String) -> Void) async throws {}
     func unload() async {}
-    func transcribe(_ samples: [Float], prompt: String) async throws -> String {
+
+    func transcribeChunks(_ samples: [Float], prompt: String) async throws -> [SpeechChunk] {
         lock.withLock { _prompts.append(prompt) }
-        return reply
+        return chunkReplies.enumerated().map { SpeechChunk(samples: [Float($0.offset)], text: $0.element) }
+    }
+
+    func transcribe(_ samples: [Float], prompt: String) async throws -> String {
+        let chunk = Int(samples.first ?? -1)
+        lock.withLock { _retried.append((chunk, prompt)) }
+        return retries[chunk] ?? chunkReplies[chunk]
     }
 }
 
@@ -456,5 +477,51 @@ private actor RecordingSetup: LocalLLMSetup {
     @Test func punctuationOnlyIsEmpty() async throws {
         let useCase = TranscribeSpeechUseCase(recognizer: StubRecognizer(reply: " ... "), config: defaultConfig())
         #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "")
+    }
+
+    /// Кусок, который с подсказкой стал «галлюцинацией», распознаётся без подсказки;
+    /// остальные куски не повторяются.
+    @Test func execute_hallucinatedChunk_EXPECTRetryWithoutPrompt() async throws {
+        let recognizer = StubRecognizer(
+            chunks: ["Первая фраза.", "Продолжение следует...", "Третья фраза."],
+            retries: [1: "вторая фраза без подсказки"]
+        )
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        let text = try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1))
+
+        #expect(text == "Первая фраза. вторая фраза без подсказки Третья фраза.")
+        #expect(recognizer.retried.map(\.chunk) == [1])
+        #expect(recognizer.retried.map(\.prompt) == [""])
+    }
+
+    @Test func execute_emptyChunk_EXPECTRetryWithoutPrompt() async throws {
+        let recognizer = StubRecognizer(chunks: ["", "Конец."], retries: [0: "Начало."])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        let text = try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1))
+
+        #expect(text == "Начало. Конец.")
+        #expect(recognizer.retried.map(\.chunk) == [0])
+    }
+
+    /// Повтор тоже «галлюцинация» — кусок выбрасывается, как и раньше.
+    @Test func execute_retryAlsoHallucinated_EXPECTChunkDropped() async throws {
+        let recognizer = StubRecognizer(chunks: ["Фраза.", "Продолжение следует..."])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Фраза.")
+        #expect(recognizer.retried.map(\.chunk) == [1])
+    }
+
+    /// Без подсказки повторять нечем: кусок уже распознан без неё.
+    @Test func execute_emptyChunkWithoutPrompt_EXPECTNoRetry() async throws {
+        var config = defaultConfig()
+        config.stt.initialPrompt = "  "
+        let recognizer = StubRecognizer(chunks: ["", "Фраза."])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: config)
+
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Фраза.")
+        #expect(recognizer.retried.isEmpty)
     }
 }
