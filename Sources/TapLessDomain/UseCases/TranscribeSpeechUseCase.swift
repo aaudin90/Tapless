@@ -51,6 +51,10 @@ public struct TranscribeSpeechUseCase: Sendable {
     /// `stt.drop_phrases` («Продолжение следует...»), и чистка выбросила бы его вместе с речью.
     /// Такой кусок распознаётся ещё раз без подсказки; остальные куски сохраняют пунктуацию
     /// и термины, которые даёт подсказка.
+    ///
+    /// Второй случай — модель с подсказкой закончила кусок раньше, чем кончилась речь
+    /// (`SpeechChunk.hasLoudUnspokenTail`): последние слова пропали. Кусок тоже распознаётся
+    /// без подсказки, и повтор берётся, только если он длиннее.
     public func execute(_ clip: AudioClip) async throws -> String {
         let prompt = stt.initialPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let chunks = try await recognizer.transcribeChunks(clip.samples, prompt: prompt)
@@ -58,12 +62,20 @@ public struct TranscribeSpeechUseCase: Sendable {
         var parts: [String] = []
         for (index, chunk) in chunks.enumerated() {
             var text = TextTools.cleanTranscript(chunk.text, dropPhrases: stt.dropPhrases)
-            if text.isEmpty, !prompt.isEmpty {
-                let retry = try await recognizer.transcribe(chunk.samples, prompt: "")
-                text = TextTools.cleanTranscript(retry, dropPhrases: stt.dropPhrases)
-                Log.info(String(format: "Кусок %ld из %ld (%.1f с) с подсказкой пуст, без подсказки — %ld симв.",
-                                index + 1, chunks.count,
-                                Double(chunk.samples.count) / AudioClip.sampleRate, text.count), .stt)
+            let lostTail = !text.isEmpty && chunk.hasLoudUnspokenTail
+            if text.isEmpty || lostTail, !prompt.isEmpty {
+                let retry = TextTools.cleanTranscript(try await recognizer.transcribe(chunk.samples, prompt: ""),
+                                                      dropPhrases: stt.dropPhrases)
+                let seconds = Double(chunk.samples.count) / AudioClip.sampleRate
+                if lostTail {
+                    Log.info(String(format: "Кусок %ld из %ld (%.1f с): расшифровка кончилась на %.1f с, дальше звук не тише речи; с подсказкой %ld симв., без подсказки — %ld",
+                                    index + 1, chunks.count, seconds, chunk.spokenEnd ?? 0, text.count, retry.count), .stt)
+                    if retry.count > text.count { text = retry }
+                } else {
+                    text = retry
+                    Log.info(String(format: "Кусок %ld из %ld (%.1f с) с подсказкой пуст, без подсказки — %ld симв.",
+                                    index + 1, chunks.count, seconds, text.count), .stt)
+                }
             }
             if !text.isEmpty { parts.append(text) }
         }
