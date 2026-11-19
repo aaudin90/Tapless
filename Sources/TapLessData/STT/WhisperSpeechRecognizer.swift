@@ -90,8 +90,11 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
 
         var chunks: [SpeechChunk] = []
         for (audio, result) in zip(audioChunks, results) {
-            let text = try result.get().map { $0.text }.joined(separator: " ")
-            chunks.append(SpeechChunk(samples: audio.audioSamples, text: text))
+            let transcriptions = try result.get()
+            let text = transcriptions.map { $0.text }.joined(separator: " ")
+            // Время сегментов — от начала куска: каждый кусок распознаётся как отдельная запись.
+            let spokenEnd = transcriptions.flatMap { $0.segments }.map { Double($0.end) }.max()
+            chunks.append(SpeechChunk(samples: audio.audioSamples, text: text, spokenEnd: spokenEnd))
         }
         Log.info(String(format: "Распознано %.1f с аудио за %.2f с: кусков %ld, %ld симв.",
                         Double(samples.count) / AudioClip.sampleRate,
@@ -138,7 +141,10 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             usePrefillPrompt: true,
             detectLanguage: language == nil,
             skipSpecialTokens: true,
-            withoutTimestamps: true,
+            // Метки времени обязательны. Без них (<|notimestamps|>) модель с подсказкой иногда
+            // пропускает начало куска: из 29 с речи возвращала последние 4 с или «Субтитры создавал…».
+            // С метками она идёт по звуку от начала; в текст метки не попадают (skipSpecialTokens).
+            withoutTimestamps: false,
             promptTokens: promptTokens,
             // По умолчанию -1.5: если модель не уверена в первом токене, кусок завершается пустым,
             // а повторы с ростом температуры дают случайный, часто тоже пустой результат.

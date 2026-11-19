@@ -26,6 +26,9 @@ private actor RecordingLLM: LLMRepository {
 private final class StubRecognizer: SpeechRecognizer, @unchecked Sendable {
     let chunkReplies: [String]
     let retries: [Int: String]
+    /// Семплы куска и конец расшифровки (`SpeechChunk.spokenEnd`) по номеру куска.
+    /// Первый семпл должен остаться номером куска.
+    let spoken: [Int: (samples: [Float], end: Double)]
     private let lock = NSLock()
     private var _prompts: [String] = []
     private var _retried: [(chunk: Int, prompt: String)] = []
@@ -35,11 +38,13 @@ private final class StubRecognizer: SpeechRecognizer, @unchecked Sendable {
     init(reply: String) {
         self.chunkReplies = [reply]
         self.retries = [:]
+        self.spoken = [:]
     }
 
-    init(chunks: [String], retries: [Int: String] = [:]) {
+    init(chunks: [String], retries: [Int: String] = [:], spoken: [Int: (samples: [Float], end: Double)] = [:]) {
         self.chunkReplies = chunks
         self.retries = retries
+        self.spoken = spoken
     }
 
     func prepare(status: @escaping @Sendable (String) -> Void) async throws {}
@@ -47,7 +52,10 @@ private final class StubRecognizer: SpeechRecognizer, @unchecked Sendable {
 
     func transcribeChunks(_ samples: [Float], prompt: String) async throws -> [SpeechChunk] {
         lock.withLock { _prompts.append(prompt) }
-        return chunkReplies.enumerated().map { SpeechChunk(samples: [Float($0.offset)], text: $0.element) }
+        return chunkReplies.enumerated().map {
+            SpeechChunk(samples: spoken[$0.offset]?.samples ?? [Float($0.offset)], text: $0.element,
+                        spokenEnd: spoken[$0.offset]?.end)
+        }
     }
 
     func transcribe(_ samples: [Float], prompt: String) async throws -> String {
@@ -523,5 +531,65 @@ private actor RecordingSetup: LocalLLMSetup {
 
         #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Фраза.")
         #expect(recognizer.retried.isEmpty)
+    }
+
+    /// 2 с куска: первая секунда — «речь» уровня `head`, вторая — уровня `tail`. Первый семпл — номер куска 0.
+    private static func samples(head: Float, tail: Float) -> [Float] {
+        [0] + [Float](repeating: head, count: 15999) + [Float](repeating: tail, count: 16000)
+    }
+
+    @Test func execute_loudTailAfterTranscript_EXPECTLongerRetryTaken() async throws {
+        let recognizer = StubRecognizer(chunks: ["Начало фразы."], retries: [0: "Начало фразы. И её конец."],
+                                        spoken: [0: (Self.samples(head: 0.05, tail: 0.05), 1.0)])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Начало фразы. И её конец.")
+        #expect(recognizer.retried.map(\.prompt) == [""])
+    }
+
+    /// Повтор без подсказки короче — остаётся текст с подсказкой.
+    @Test func execute_loudTailShorterRetry_EXPECTOriginalKept() async throws {
+        let recognizer = StubRecognizer(chunks: ["Начало фразы."], retries: [0: "Начало."],
+                                        spoken: [0: (Self.samples(head: 0.05, tail: 0.05), 1.0)])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Начало фразы.")
+        #expect(recognizer.retried.count == 1)
+    }
+
+    /// Тихий хвост — обычная пауза после речи: на ней Whisper выдумывает слова, повтора нет.
+    @Test func execute_quietTailAfterTranscript_EXPECTNoRetry() async throws {
+        let recognizer = StubRecognizer(chunks: ["Фраза."], retries: [0: "Фраза. Спасибо."],
+                                        spoken: [0: (Self.samples(head: 0.05, tail: 0.02), 1.0)])
+        let useCase = TranscribeSpeechUseCase(recognizer: recognizer, config: defaultConfig())
+
+        #expect(try await useCase.execute(AudioClip(samples: [0.1], peakLevel: 0.1)) == "Фраза.")
+        #expect(recognizer.retried.isEmpty)
+    }
+}
+
+@Suite struct SpeechChunkTests {
+    private func chunk(head: Float, tail: Float, tailSeconds: Double, spokenEnd: Double?) -> SpeechChunk {
+        SpeechChunk(samples: [Float](repeating: head, count: 16000)
+                        + [Float](repeating: tail, count: Int(tailSeconds * 16000)),
+                    text: "текст", spokenEnd: spokenEnd)
+    }
+
+    @Test func loudTail_EXPECTDetected() {
+        #expect(chunk(head: 0.05, tail: 0.04, tailSeconds: 1, spokenEnd: 1).hasLoudUnspokenTail)
+    }
+
+    @Test func quietTail_EXPECTIgnored() {
+        #expect(!chunk(head: 0.05, tail: 0.029, tailSeconds: 3, spokenEnd: 1).hasLoudUnspokenTail)
+    }
+
+    @Test func shortTail_EXPECTIgnored() {
+        #expect(!chunk(head: 0.05, tail: 0.05, tailSeconds: 0.4, spokenEnd: 1).hasLoudUnspokenTail)
+    }
+
+    @Test func unknownOrFullSpokenEnd_EXPECTIgnored() {
+        #expect(!chunk(head: 0.05, tail: 0.05, tailSeconds: 1, spokenEnd: nil).hasLoudUnspokenTail)
+        #expect(!chunk(head: 0.05, tail: 0.05, tailSeconds: 1, spokenEnd: 2).hasLoudUnspokenTail)
+        #expect(!chunk(head: 0.05, tail: 0.05, tailSeconds: 1, spokenEnd: 30).hasLoudUnspokenTail)
     }
 }
